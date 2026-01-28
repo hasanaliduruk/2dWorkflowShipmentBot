@@ -368,49 +368,32 @@ def drafti_kopyala(target_date, original_from_loc):
             # Yeni sayfaya git
             new_page_res = manager.session.get(full_redirect_url)
             
-            # --- YENİ DRAFT İSMİNİ BUL ---
-            # Sayfadaki <input ... name="...:draft_name" value="YENİ_İSİM"> alanını çek
             soup_new = BeautifulSoup(new_page_res.text, 'html.parser')
-            # ID genelde mainForm:draftInfo:0:draft_name veya benzeridir
-            # Value'su dolu olan draft name inputunu bul
             name_input = soup_new.find("input", {"name": lambda x: x and "draft_name" in x})
-            
-            new_draft_name = "Bilinmeyen Kopya"
-            if name_input:
-                new_draft_name = name_input.get("value")
+            new_draft_name = name_input.get("value") if name_input else "Bilinmeyen Kopya"
             
             manager.add_log(f"✅ Kopyalandı: {new_draft_name}")
+
+            target_keyword = " ".join(original_from_loc.lower().split())
+            page_content_lower = new_page_res.text.lower()
+            
+            # Sayfa içinde adres geçiyor mu?
+            if target_keyword not in page_content_lower:
+                manager.add_log(f"⚠️ Adres uyuşmazlığı tespit edildi. Düzeltiliyor...", "warning")
+                basarili = adresi_duzelt_backend(full_redirect_url, original_from_loc)
+                if not basarili:
+                    manager.add_log("❌ KRİTİK: Adres düzeltilemedi! Manuel müdahale gerekir.", "error")
 
             time.sleep(1) # Sistemin oturması için
             res_check = manager.session.get(DRAFT_PAGE_URL)
             df_check = html_tabloyu_parse_et(res_check.text)
-
             yeni_satir = df_check[df_check["Draft Name"] == new_draft_name]
 
-            yeni_tarih = None
             if not yeni_satir.empty:
                 yeni_tarih = yeni_satir.iloc[0]["Created"]
-                new_from_loc = yeni_satir.iloc[0]["From"]
-                
-                target_keyword = " ".join(original_from_loc.lower().split())
-                current_loc_cleaned = " ".join(new_from_loc.lower().split())
-                
-                adres_uyusuyor_mu = target_keyword in current_loc_cleaned
-                
-                if not adres_uyusuyor_mu:
-                    manager.add_log(f"⚠️ Adres uyuşmazlığı! Beklenen: {original_from_loc} -> Gelen: {new_from_loc}", "warning")
-                    
-                    adresi_duzelt_backend(full_redirect_url, original_from_loc)
-                else:
-                    manager.add_log("✅ Adres doğrulandı.", "success")
-            else:
-                manager.add_log("⚠️ Yeni kopya listede henüz görünmüyor.", "warning")
-
-            # --- DÖNÜŞ DEĞERİ: ARTIK SADECE İSİM DEĞİL, PAKET DÖNÜYORUZ ---
-            if yeni_tarih:
                 return {"name": new_draft_name, "date": yeni_tarih}
-            else:
-                return None
+            
+            return None
             
         except Exception as e: 
             print(f"Kopya isim hatası: {e}")
@@ -512,139 +495,126 @@ def drafti_planla_backend(target_date, draft_name):
         manager.add_log(f"Hata ({draft_name}): {str(e)}", "error")
         return None
 
-def adresi_duzelt_backend(draft_url, hedef_adres_keyword):
-    manager.add_log(f"🛠️ Adres düzeltme operasyonu başlatılıyor... Hedef: {hedef_adres_keyword}", "warning")
+def adresi_duzelt_backend(draft_url, hedef_adres_keyword="New Jersey"):
+    manager.add_log(f"🛠️ Adres düzeltme operasyonu: {hedef_adres_keyword}", "warning")
     
     try:
-        # --- ADIM 1: EDIT MODALINI AÇMAK ---
-        
-        # 1.a) Sayfadaki güncel verileri topla
+        # 1. Sayfayı Çek
         res_main = manager.session.get(draft_url)
         form_data = form_verilerini_topla(res_main.text)
         current_viewstate = form_data.get("javax.faces.ViewState")
-        
         soup = BeautifulSoup(res_main.text, 'html.parser')
 
+        # 2. Kalem Butonunu Bul
         edit_link = soup.find("a", title="Change 'Ship From' address")
-        
-        if not edit_link:
-            edit_link = soup.find("a", id=re.compile(r"ship_from_address_edit"))
-            
+        if not edit_link: edit_link = soup.find("a", id=re.compile(r"ship_from_address_edit"))
         if not edit_link:
             pencil_icon = soup.find("i", class_="pi-pencil")
-            if pencil_icon:
-                edit_link = pencil_icon.find_parent("a")
+            if pencil_icon: edit_link = pencil_icon.find_parent("a")
 
         if not edit_link:
-            manager.add_log("❌ Adres düzenleme (Kalem) butonu sayfada bulunamadı!", "error")
+            manager.add_log("❌ Kalem butonu bulunamadı.", "error")
             return False
 
         edit_btn_id = edit_link.get("id")
         
-        # 1.b) Payload 1 Hazırla (Modalı Render Etmek İçin)
+        # 3. Modalı Aç
         payload_open = {
             "javax.faces.partial.ajax": "true",
             "javax.faces.source": edit_btn_id,
             "javax.faces.partial.execute": edit_btn_id,
-            "javax.faces.partial.render": "addressDialog:addressForm:addressTable", # Tabloyu render et
+            "javax.faces.partial.render": "addressDialog:addressForm:addressTable", 
             edit_btn_id: edit_btn_id,
             "mainForm": "mainForm",
-            **form_data # Sayfadaki diğer inputları da ekle
+            **form_data 
         }
-        
-        # 1.c) İsteği Gönder
         res_open = manager.session.post(draft_url, data=payload_open)
         
-        # --- ADIM 2: MODAL İÇERİĞİNİ PARSE ET VE HEDEFİ BUL ---
-        
-        # 2.a) Yeni ViewState'i Yakala (Çok Önemli!)
-        # Response 1 içinde ViewState güncelleniyor, onu almalıyız.
+        # 4. Modaldan Hedefi Bul
         match_vs = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res_open.text)
-        if match_vs:
-            current_viewstate = match_vs.group(1)
-            # Form data'yı güncelle
-            form_data["javax.faces.ViewState"] = current_viewstate
+        if match_vs: current_viewstate = match_vs.group(1)
             
-        # 2.b) Modal HTML'ini Çıkar (CDATA içindedir)
-        # addressDialog:addressForm:addressTable update bloğunu bul
-        xml_soup = BeautifulSoup(res_open.text, 'xml') # XML parser kullanıyoruz response için
-        update_tag = xml_soup.find("update", {"id": "addressDialog:addressForm:addressTable"}) # Tam ID'yi ara
-        
-        if not update_tag:
-             # ID ile bulamazsa alternatif (Data Table ID'si genelde sabittir ama yine de)
-             html_parts = re.findall(r'<!\[CDATA\[(.*?)]]>', res_open.text, re.DOTALL)
-             modal_html = "".join(html_parts)
-        else:
-             modal_html = update_tag.text
-
+        xml_soup = BeautifulSoup(res_open.text, 'xml')
+        update_tag = xml_soup.find("update", {"id": "addressDialog:addressForm:addressTable"})
+        modal_html = update_tag.text if update_tag else "".join(re.findall(r'<!\[CDATA\[(.*?)]]>', res_open.text, re.DOTALL))
         modal_soup = BeautifulSoup(modal_html, 'html.parser')
         
-        # 2.c) Hedef Satırı ve RowKey'i Bul
         rows = modal_soup.find_all("tr", role="row")
         target_row_key = None
-        target_row_index = None
         
-        for index, row in enumerate(rows):
-            # Satırdaki metinleri kontrol et
-            row_text = row.get_text(" ", strip=True).lower()
-            
-            # Hedef kelime (örn: new jersey) satırda geçiyor mu?
-            if hedef_adres_keyword.lower() in row_text:
-                target_row_key = row.get("data-rk") # İŞTE BU! (ab2a6e...)
-                target_row_index = row.get("data-ri")
-                manager.add_log(f"✅ Hedef satır bulundu. Key: {target_row_key}", "info")
+        for row in rows:
+            if hedef_adres_keyword.lower() in row.get_text(" ", strip=True).lower():
+                target_row_key = row.get("data-rk")
                 break
         
         if not target_row_key:
-            manager.add_log(f"❌ '{hedef_adres_keyword}' içeren satır modalda bulunamadı.", "error")
+            manager.add_log(f"❌ '{hedef_adres_keyword}' satırı bulunamadı.", "error")
             return False
 
-        # --- ADIM 3: SEÇİMİ GÖNDER (SELECT BUTTON CLICK) ---
-        
-        # 3.a) Select Butonunu Bul (Payload 2'deki source)
-        # Genelde tablonun footer'ındadır veya ID'si j_idt ile başlar.
-        # Senin paylaştığın payload'da kaynak: addressDialog:addressForm:addressTable:j_idt156
-        # Modal HTML içinde butonu bulmaya çalışalım
+        # 5. Seçim İsteğini Hazırla ve Gönder
         select_btn = modal_soup.find("button", text=lambda x: x and "Select" in x)
-        if not select_btn:
-             # Text ile bulamazsak class ile
-             select_btn = modal_soup.find("button", class_="ui-button")
-        
-        # ID'yi dinamik alalım (Logda 156 bitiyordu ama değişebilir)
         select_btn_id = select_btn.get("id") if select_btn else "addressDialog:addressForm:addressTable:j_idt156"
-        
-        # Eğer modal HTML'inde ID tam path ile gelmiyorsa (bazen sadece son kısmı gelir),
-        # Payload'daki örneği baz alarak prefix ekleyebiliriz.
-        if ":" not in select_btn_id:
-             select_btn_id = f"addressDialog:addressForm:addressTable:{select_btn_id}"
+        if ":" not in select_btn_id: select_btn_id = f"addressDialog:addressForm:addressTable:{select_btn_id}"
 
-        # 3.b) Payload 2 Hazırla (Seçim İşlemi)
-        # Modal içindeki form inputlarını (radio, inputs) toplayalım
-        # JSF güvenlik gereği tablodaki inputları da isteyebilir.
         modal_inputs = form_verilerini_topla(modal_html)
         
         payload_select = {
             "javax.faces.partial.ajax": "true",
             "javax.faces.source": select_btn_id,
-            "javax.faces.partial.execute": "addressDialog:addressForm", # Tüm modal formunu execute et
-            # "javax.faces.partial.render": "mainForm:draftInfo", # Senin payload'da render yoktu ama JSF genelde ister
+            "javax.faces.partial.execute": "addressDialog:addressForm", 
             select_btn_id: select_btn_id,
-            "addressDialog:addressForm": "addressDialog:addressForm", # Form ID
-            "addressDialog:addressForm:addressTable_radio": "on", # Radio mode
-            "addressDialog:addressForm:addressTable_selection": target_row_key, # KRİTİK VERİ BURADA
+            "addressDialog:addressForm": "addressDialog:addressForm", 
+            "addressDialog:addressForm:addressTable_radio": "on", 
+            "addressDialog:addressForm:addressTable_selection": target_row_key,
             "javax.faces.ViewState": current_viewstate,
-            **modal_inputs # Modal içindeki input değerlerini ekle (satırlar vb.)
+            **modal_inputs 
         }
         
-        # 3.c) İsteği Gönder
         res_select = manager.session.post(draft_url, data=payload_select)
         
-        if res_select.status_code == 200 and "error" not in res_select.text.lower():
-            manager.add_log("✅ Adres başarıyla değiştirildi.", "success")
-            return True
-        else:
-            manager.add_log("❌ Adres seçim isteği başarısız oldu.", "error")
-            return False
+        # --- İŞTE BURASI: KÖR ATIŞ YERİNE AKILLI GÜNCELLEME ---
+        if res_select.status_code == 200:
+            match_vs_2 = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res_select.text)
+            if match_vs_2: current_viewstate = match_vs_2.group(1)
+            
+            # 6. Gizli Refresh Butonunu Bul (update="...draftInfo...")
+            # Sayfadaki tüm elementleri tara ve draftInfo'yu güncelleyen gizli kahramanı bul.
+            # Genellikle data-pf-update attribute'unda yazar (PrimeFaces)
+            # Yada oncomplete eventinde.
+            
+            # En güvenli yol: Sayfadaki tüm form elemanlarını tekrar gönder ama 'draftInfo'yu render etmesini iste.
+            refresh_source = "mainForm"
+            
+            # HTML içinde update="...draftInfo" olan bir şey var mı diye bakıyoruz
+            # Bu biraz maliyetli ama kesin çözüm.
+            possible_updater = soup.find(attrs={"data-pf-update": re.compile(r"draftInfo")})
+            if possible_updater:
+                refresh_source = possible_updater.get("id")
+                # manager.add_log(f"Gizli güncelleme butonu bulundu: {refresh_source}", "info")
+
+            payload_refresh = {
+                "javax.faces.partial.ajax": "true",
+                "javax.faces.source": refresh_source,
+                "javax.faces.partial.execute": "@all",
+                "javax.faces.partial.render": "mainForm:draftInfo",
+                refresh_source: refresh_source,
+                "mainForm": "mainForm",
+                "javax.faces.ViewState": current_viewstate,
+                **form_data
+            }
+            manager.session.post(draft_url, data=payload_refresh)
+            
+            # 7. SON KONTROL (Double Check)
+            time.sleep(1) # Server işlemesi için
+            check_res = manager.session.get(draft_url)
+            if hedef_adres_keyword.lower() in check_res.text.lower():
+                manager.add_log("✅✅ Adres değişikliği DOĞRULANDI.", "success")
+                return True
+            else:
+                manager.add_log("❌ Sunucu 'Tamam' dedi ama adres değişmedi! (Backend hatası)", "error")
+                return False
+        
+        return False
 
     except Exception as e:
         manager.add_log(f"Adres düzeltme hatası: {e}", "error")
@@ -680,6 +650,7 @@ def gorev():
                 'date': yeni_tarih
             }
             print(f"✅ Takip listesi güncellendi: {yeni_isim} ({yeni_tarih})")
+            break
 
 @st.cache_resource
 def start_scheduler():
