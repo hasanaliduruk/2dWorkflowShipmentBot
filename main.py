@@ -46,6 +46,22 @@ def get_manager():
 
 manager = get_manager()
 
+# --- HESAP SEÇİM AYARLARI ---
+# Buradaki verileri kendi DB veya config dosyanızdan çekebilirsiniz.
+ACCOUNTS = [
+    {"id": "babil", "name": "Babil Design", "flag": "🇺🇸"},
+    {"id": "kwiek", "name": "KWIEK-USA", "flag": "🇺🇸"},
+]
+
+# Varsayılan seçim yoksa ilkini seç
+if "selected_account" not in st.session_state:
+    st.session_state.selected_account = ACCOUNTS[0]
+
+def change_account(account):
+    st.session_state.selected_account = account
+    # Burada global manager'a hesap bilgisini güncelleyebilirsiniz
+    # manager.current_account = account['id'] gibi
+
 # --- KONFIGURASYON ---
 try:
     TEAMS_WEBHOOK_URL = st.secrets["TEAMS_WEBHOOK"]
@@ -130,15 +146,15 @@ def html_tabloyu_parse_et(html_content):
     if not rows: return pd.DataFrame()
 
     watchlist_df = manager.get_watch_list_df()
-    if not watchlist_df.empty and "id" in watchlist_df.columns:
-        takip_edilen_idler = set(watchlist_df["id"].values)
+    if not watchlist_df.empty and "date" in watchlist_df.columns:
+        takip_edilen_tarihler = set(watchlist_df["date"].values)
     else:
-        takip_edilen_idler = set()
+        takip_edilen_tarihler = set()
     
     veri_listesi = []
     for row in rows:
         cells = row.find_all("td")
-        if not cells or len(cells) < 9: continue
+        if not cells or len(cells) < 11: continue
         try:
             name_input = cells[2].find("input")
             draft_name = name_input['value'] if name_input else cells[2].get_text(strip=True)
@@ -155,13 +171,13 @@ def html_tabloyu_parse_et(html_content):
             copy_action_id = copy_link.get("id") if copy_link else None
 
             from_loc = cells[3].get_text(strip=True)
-            created_date = cells[8].get_text(strip=True)
+            created_date = cells[10].get_text(strip=True)
             
             # --- AUTO SELECT MANTIĞI ---
             # Eğer bu draft ismi, oluşturduğumuz kopyalar listesindeyse TRUE yap
             
 
-            secili_mi = row_action_id in takip_edilen_idler
+            secili_mi = created_date in takip_edilen_tarihler
             veri_listesi.append({
                 "Action ID": row_action_id,
                 "Copy ID": copy_action_id,
@@ -199,7 +215,7 @@ def teams_bildirim_gonder(mesaj):
     try: manager.session.post(TEAMS_WEBHOOK_URL, json=payload, headers={'Content-Type': 'application/json'})
     except: pass
 
-def analizi_yap(xml_response):
+def analizi_yap(xml_response, draft_name):
     manager.add_log("📊 Sonuçlar analiz ediliyor...")
     
     html_parts = re.findall(r'<!\[CDATA\[(.*?)]]>', xml_response, re.DOTALL)
@@ -212,7 +228,7 @@ def analizi_yap(xml_response):
     rows = plans_table.find_all("tr")
     current_option = "Bilinmiyor"
     firsat_bulundu = False
-    msg = ""
+    msg = "=============" + draft_name + "=============\n\n"
     
     for row in rows:
         if "ui-rowgroup-header" in row.get("class", []):
@@ -229,15 +245,16 @@ def analizi_yap(xml_response):
                     
                     if "Amazon Optimized" in current_option: continue
                     
-                    if mil < 1000:
+                    if mil < 300:
                         detay = f"✅ FIRSAT! {mil} Mil - Plan: {current_option} - Depo: {dest}"
                         manager.add_log(detay, "success")
-                        teams_bildirim_gonder(detay)
+                        msg += detay + "\n"
                         firsat_bulundu = True
                     else:
-                        manager.add_log(f"❌ {mil} Mil ({dest}) - Uygun değil")
+                        detay = f"❌ {mil} Mil ({dest}) - Uygun değil"
+                        msg += detay + "\n"
+                        manager.add_log(detay)
                 except: pass
-    
     if msg: teams_bildirim_gonder(msg)
     return firsat_bulundu
 
@@ -263,8 +280,8 @@ def poll_results_until_complete(session, base_payload, referer_url):
                     if match: base_payload["javax.faces.ViewState"] = match.group(1)
                 except: pass
 
-            if "mainForm:plans" in res.text or "Amazon Optimized Splits" in res.text:
-                return res.text
+            #if "mainForm:plans" in res.text or "Amazon Optimized Splits" in res.text:
+                #return res.text
             
             match_percent = re.search(r'>\s*(\d+)\s*%\s*<', res.text)
             current_percent = int(match_percent.group(1)) if match_percent else 0
@@ -361,19 +378,27 @@ def drafti_kopyala(original_draft_action_id):
             
     return None
 
-def drafti_planla_backend(action_id_open_button, draft_name):
+def drafti_planla_backend(target_date, draft_name):
     try:
         # 1. Draft Aç
         manager.add_log(f"İşlem başladı: {draft_name}", "info")
         main_res = manager.session.get(DRAFT_PAGE_URL)
         if "login.jsf" in main_res.url: login(); main_res = manager.session.get(DRAFT_PAGE_URL)
 
+        df = html_tabloyu_parse_et(main_res.text)
+        target_row = df[df["Created"] == target_date]
+
+        if target_row.empty:
+            manager.add_log(f"⚠️ {draft_name} listede bulunamadı! (Tarih eşleşmedi)", "warning")
+            return None
+        current_action_id = target_row.iloc[0]["Action ID"]
+
         form_data = form_verilerini_topla(main_res.text)
         action_payload = {
             "javax.faces.partial.ajax": "true",
-            "javax.faces.source": action_id_open_button,
+            "javax.faces.source": current_action_id,
             "javax.faces.partial.execute": "@all",
-            action_id_open_button: action_id_open_button, 
+            current_action_id: current_action_id, 
             "mainForm": "mainForm"
         }
         res_open = manager.session.post(DRAFT_PAGE_URL, data={**form_data, **action_payload})
@@ -424,11 +449,11 @@ def drafti_planla_backend(action_id_open_button, draft_name):
         )
         
         if final_xml:
-            firsat = analizi_yap(final_xml)
+            firsat = analizi_yap(final_xml, draft_name)
             
             if firsat:
                 # Kopyala ve yeni ismi döndür
-                yeni_isim = drafti_kopyala(action_id_open_button)
+                yeni_isim = drafti_kopyala(current_action_id)
                 if yeni_isim:
                     manager.add_log(f"{draft_name} için fırsat bulundu, kopyalanıyor...", "success")
                     
@@ -461,9 +486,9 @@ def gorev():
     
     for i, item in enumerate(current_list):
         d_name = item['name']
-        a_id = item['id']
+        d_date = item['date']
         
-        yeni_kopya_ismi = drafti_planla_backend(a_id, d_name)
+        yeni_kopya_ismi = drafti_planla_backend(d_date, d_name)
         
         if yeni_kopya_ismi:
             manager.add_log(f"🔄 Listede güncelleniyor: {d_name} -> {yeni_kopya_ismi}", "success")
@@ -479,15 +504,15 @@ def gorev():
                 yeni_satir = df[df["Draft Name"] == yeni_kopya_ismi]
                 
                 if not yeni_satir.empty:
-                    yeni_action_id = yeni_satir.iloc[0]["Action ID"]
+                    new_date = yeni_satir.iloc[0]["Created"]
                     
                     # Watch List'teki bu öğeyi güncelle
                     manager.watch_list[i] = {
                         'name': yeni_kopya_ismi,
-                        'id': yeni_action_id
+                        'date': new_date
                     }
                     degisiklik_var = True
-                    print(f"   ✅ Takip listesi güncellendi: {d_name} -> {yeni_kopya_ismi}")
+                    print(f"✅ Takip listesi güncellendi: {d_name} -> {yeni_kopya_ismi} ({new_date})")
                 else:
                     print("   ⚠️ Yeni kopya listede bulunamadı (Zamanlama sorunu olabilir).")
             except Exception as e:
@@ -497,7 +522,7 @@ def gorev():
 @st.cache_resource
 def start_scheduler():
     sched = BackgroundScheduler()
-    sched.add_job(gorev, 'interval', seconds=3000, max_instances=1, misfire_grace_time=None)
+    sched.add_job(gorev, 'interval', minutes=30, max_instances=1, misfire_grace_time=None)
     sched.start()
     return sched
 
@@ -517,7 +542,7 @@ if not watch_df.empty:
         watch_df,
         column_config={
             "name": "Taslak Adı",
-            "id": "Action ID"
+            "date": "Created"
         },
         num_rows="dynamic", # Satır ekleme/silme açık
         key="watch_list_editor",
@@ -541,10 +566,33 @@ col1, col2 = st.columns([2, 1])
 
 with col1:
     st.subheader("📦 Mevcut Taslaklar")
-    if st.button("🔄 Taslakları Yenile"):
-        st.cache_data.clear()
-        st.rerun()
 
+    header_col, menu_col = st.columns([3, 0.75], gap="small")
+
+    with header_col:
+        if st.button("🔄 Taslakları Yenile"):
+            st.cache_data.clear()
+            st.rerun()
+    with menu_col:
+        # Seçili olanı göster
+        current_acc = st.session_state.selected_account
+        label = f"{current_acc['flag']} {current_acc['name']}"
+        
+        # Popover (Açılır Menü) - use_container_width=True kutuyu sütuna yayar
+        with st.popover(label, use_container_width=True):
+            st.caption("Hesap Değiştir")
+            for acc in ACCOUNTS:
+                # Her satırı İsim ve İkon olarak ikiye böl
+                
+                is_selected = (acc['id'] == current_acc['id'])
+                btn_style = "primary" if is_selected else "secondary"
+                
+                if st.button(f"{acc['flag']} {acc['name']}", 
+                             key=f"sel_{acc['id']}", 
+                             type=btn_style, 
+                             use_container_width=True): # Tam genişlik
+                    change_account(acc)
+                    st.rerun()
     df, hata = veriyi_dataframe_yap()
     
     if df is not None and not df.empty:
@@ -566,16 +614,16 @@ with col1:
             
             # --- MÜKERRER KAYIT ENGELLEME EKLENDİ ---
             # Mevcut ID'leri hızlı kontrol için kümeye al
-            mevcut_idler = {item['id'] for item in current}
+            mevcut_tarihler = {item['date'] for item in current if 'date' in item}
             
             eklenen_sayisi = 0
             for index, row in secili_satirlar.iterrows():
-                yeni_id = row['Action ID']
+                new_date = row['Created']
                 
                 # Eğer listede yoksa ekle
-                if yeni_id not in mevcut_idler:
-                    current.append({'name': row['Draft Name'], 'id': yeni_id})
-                    mevcut_idler.add(yeni_id)
+                if new_date not in mevcut_tarihler:
+                    current.append({'name': row['Draft Name'], 'date': new_date})
+                    mevcut_tarihler.add(new_date)
                     eklenen_sayisi += 1
             
             if eklenen_sayisi > 0:
