@@ -585,7 +585,7 @@ with col1:
             disabled=["Draft Name", "From", "Created"],
             hide_index=True,
             width='stretch',
-            height='300px'
+            height='300px',
             key="draft_selector"
         )
         
