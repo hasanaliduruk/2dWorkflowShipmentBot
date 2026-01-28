@@ -56,8 +56,8 @@ manager = get_manager()
 # --- HESAP SEÇİM AYARLARI ---
 # Buradaki verileri kendi DB veya config dosyanızdan çekebilirsiniz.
 ACCOUNTS = [
-    {"id": "babil", "name": "Babil Design", "flag": "🇺🇸"},
-    {"id": "kwiek", "name": "KWIEK-USA", "flag": "🇺🇸"},
+    {"id": "babil", "name": "Babil Design", "flag": ""},
+    {"id": "kwiek", "name": "KWIEK-USA", "flag": ""},
 ]
 
 # Varsayılan seçim yoksa ilkini seç
@@ -374,7 +374,7 @@ def drafti_kopyala(target_date, original_from_loc):
             new_draft_name = name_input.get("value") if name_input else "Bilinmeyen Kopya"
             
             manager.add_log(f"✅ Kopyalandı: {new_draft_name}")
-            """
+            
             target_keyword = " ".join(original_from_loc.lower().split())
             page_content_lower = new_page_res.text.lower()
             
@@ -395,7 +395,7 @@ def drafti_kopyala(target_date, original_from_loc):
             if not yeni_satir.empty:
                 yeni_tarih = yeni_satir.iloc[0]["Created"]
                 return {"name": new_draft_name, "date": yeni_tarih}
-            """
+            
             return None
             
         except Exception as e: 
