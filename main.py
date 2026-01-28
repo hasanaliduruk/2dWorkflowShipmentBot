@@ -18,6 +18,7 @@ class GlobalManager:
         self.logs = deque(maxlen=50)
         
         self.mile_threshold = 300
+        self.mins_threshold = 30
 
         # --- CRITICAL FIX: Session managed here, not in st.session_state ---
         self.session = requests.Session()
@@ -26,7 +27,8 @@ class GlobalManager:
         })
     def set_mile_threshold(self, new_val):
         self.mile_threshold = new_val
-
+    def set_mins_threshold(self, new_val):
+        self.mins_threshold = new_val
     def add_log(self, message, type="info"):
         timestamp = datetime.now().strftime("%H:%M:%S")
         icon = "ℹ️"
@@ -679,11 +681,10 @@ def gorev():
             }
             print(f"✅ Takip listesi güncellendi: {yeni_isim} ({yeni_tarih})")
 
-# --- SCHEDULER BAŞLATMA ---
 @st.cache_resource
 def start_scheduler():
     sched = BackgroundScheduler()
-    sched.add_job(gorev, 'interval', minutes=30, max_instances=1, misfire_grace_time=None)
+    sched.add_job(gorev, 'interval', minutes=manager.mins_threshold, id='ana_gorev', max_instances=1, misfire_grace_time=None)
     sched.start()
     return sched
 
@@ -696,22 +697,46 @@ with st.sidebar:
     st.header("⚙️ Bot Ayarları")
     
     # Mil Ayarı
-    yeni_sinir = st.number_input(
+    mile_limit = st.number_input(
         "Fırsat Mil Sınırı (Mil)", 
-        min_value=50, 
-        max_value=3000, 
+        min_value=0, 
+        max_value=5000, 
         value=manager.mile_threshold, # Varsayılan olarak manager'daki değeri göster
         step=50,
         help="Planlanan kargo bu mesafenin altındaysa otomatik kopya oluşturulur."
     )
     
     # Değer değişirse Manager'ı güncelle
-    if yeni_sinir != manager.mile_threshold:
-        manager.set_mile_threshold(yeni_sinir)
-        st.toast(f"✅ Sınır güncellendi: {yeni_sinir} Mil")
+    if mile_limit != manager.mile_threshold:
+        manager.set_mile_threshold(mile_limit)
+        st.toast(f"✅ Sınır güncellendi: {mile_limit} Mil")
+
+    # Min Ayarı
+    min_limit = st.number_input(
+        "Tekrar deneme dakikası", 
+        min_value=1, 
+        max_value=500, 
+        value=manager.mins_threshold, # Varsayılan olarak manager'daki değeri göster
+        step=5,
+        help="Planlanan kargo bu mesafenin altındaysa otomatik kopya oluşturulur."
+    )
+    
+    # Değer değişirse Manager'ı güncelle
+    if min_limit != manager.mins_threshold:
+        # 1. Manager'daki değeri güncelle
+        manager.set_mins_threshold(min_limit)
+        
+        # 2. Çalışan Scheduler'ı CANLI olarak güncelle (HATA 2 DÜZELDİ)
+        try:
+            scheduler.reschedule_job('ana_gorev', trigger='interval', minutes=min_limit)
+            st.toast(f"✅ Sıklık güncellendi: {min_limit} dakikada bir çalışacak.")
+            manager.add_log(f"Zamanlayıcı güncellendi: Yeni aralık {min_limit} dk.", "warning")
+        except Exception as e:
+            st.error(f"Zamanlayıcı güncellenemedi: {e}")
         
     st.divider()
-    st.caption(f"Aktif Sınır: **{manager.mile_threshold} Mil**")
+    st.caption(f"Aktif Mil Sınır: **{manager.mile_threshold} Mil**")
+    st.caption(f"Aktif Dakika Sınır: **{manager.mins_threshold} Mil**")
 
 st.title("📑 Otomatik Kargo Botu")
 
