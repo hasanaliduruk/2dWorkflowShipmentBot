@@ -736,7 +736,7 @@ with st.sidebar:
         
     st.divider()
     st.caption(f"Aktif Mil Sınır: **{manager.mile_threshold} Mil**")
-    st.caption(f"Aktif Dakika Sınır: **{manager.mins_threshold} Mil**")
+    st.caption(f"Aktif Dakika Sınır: **{manager.mins_threshold} Dakika**")
 
 st.title("📑 Otomatik Kargo Botu")
 
