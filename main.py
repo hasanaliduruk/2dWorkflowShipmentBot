@@ -12,6 +12,7 @@ from collections import deque
 
 class GlobalManager:
     def __init__(self):
+        self.active_drafts = set()
         # Watch list
         self.watch_list = []
         # Logs
@@ -402,6 +403,10 @@ def drafti_kopyala(target_date, original_from_loc):
     return None
 
 def drafti_planla_backend(target_date, draft_name):
+    if draft_name in manager.active_drafts:
+        manager.add_log(f"⛔ {draft_name} zaten işlemde, atlandı.", "warning")
+        return None
+    manager.active_drafts.add(draft_name)
     try:
         # 1. Draft Aç
         manager.add_log(f"İşlem başladı: {draft_name}", "info")
@@ -592,6 +597,8 @@ def adresi_duzelt_backend(draft_url, hedef_adres_keyword="New Jersey"):
                 refresh_source = possible_updater.get("id")
                 # manager.add_log(f"Gizli güncelleme butonu bulundu: {refresh_source}", "info")
 
+            modal_form_data = form_verilerini_topla(modal_html)
+
             payload_refresh = {
                 "javax.faces.partial.ajax": "true",
                 "javax.faces.source": refresh_source,
@@ -600,7 +607,7 @@ def adresi_duzelt_backend(draft_url, hedef_adres_keyword="New Jersey"):
                 refresh_source: refresh_source,
                 "mainForm": "mainForm",
                 "javax.faces.ViewState": current_viewstate,
-                **form_data
+                **modal_form_data
             }
             manager.session.post(draft_url, data=payload_refresh)
             
@@ -789,7 +796,15 @@ with col1:
                 # Scheduler'a "gorev" fonksiyonunu ŞU AN ('date' modunda) çalıştırmasını söylüyoruz.
                 # Periyodik döngü bozulmaz, sadece araya bir işlem sıkıştırır.
                 try:
-                    scheduler.add_job(gorev, 'date', run_date=datetime.now())
+                    if not scheduler.get_job("manual_once"):
+                        scheduler.add_job(
+                            gorev,
+                            'date',
+                            run_date=datetime.now(),
+                            id="manual_once",
+                            replace_existing=True
+                        )
+
                     st.toast("🚀 İşlem arka planda hemen başlatıldı!")
                 except Exception as e:
                     st.warning(f"Otomatik başlatma tetiklenemedi (Zaten çalışıyor olabilir): {e}")
@@ -846,4 +861,3 @@ if not watch_df.empty:
         st.rerun()
 else:
     st.info("Takip listesi şu an boş. Aşağıdan taslak seçip ekleyin.")
-
