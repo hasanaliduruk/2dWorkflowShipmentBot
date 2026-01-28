@@ -17,12 +17,16 @@ class GlobalManager:
         # Logs
         self.logs = deque(maxlen=50)
         
+        self.mile_threshold = 300
+
         # --- CRITICAL FIX: Session managed here, not in st.session_state ---
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         })
-        
+    def set_mile_threshold(self, new_val):
+        self.mile_threshold = new_val
+
     def add_log(self, message, type="info"):
         timestamp = datetime.now().strftime("%H:%M:%S")
         icon = "ℹ️"
@@ -49,18 +53,13 @@ manager = get_manager()
 # --- HESAP SEÇİM AYARLARI ---
 # Buradaki verileri kendi DB veya config dosyanızdan çekebilirsiniz.
 ACCOUNTS = [
-    {"id": "babil", "name": "Babil Design", "flag": "🇺🇸"},
-    {"id": "kwiek", "name": "KWIEK-USA", "flag": "🇺🇸"},
+    #{"id": "babil", "name": "Babil Design", "flag": "🇺🇸"},
+    #{"id": "kwiek", "name": "KWIEK-USA", "flag": "🇺🇸"},
 ]
 
 # Varsayılan seçim yoksa ilkini seç
 if "selected_account" not in st.session_state:
     st.session_state.selected_account = ACCOUNTS[0]
-
-def change_account(account):
-    st.session_state.selected_account = account
-    # Burada global manager'a hesap bilgisini güncelleyebilirsiniz
-    # manager.current_account = account['id'] gibi
 
 # --- KONFIGURASYON ---
 try:
@@ -122,6 +121,9 @@ def login():
 
         return False
 
+def change_account(account):
+    st.session_state.selected_account = account
+    
 def form_verilerini_topla(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
     form = soup.find("form", id="mainForm")
@@ -234,6 +236,8 @@ def analizi_yap(xml_response, draft_name):
     firsat_bulundu = False
     msg = "=============" + draft_name + "=============\n\n"
     
+    limit = manager.mile_threshold
+
     for row in rows:
         if "ui-rowgroup-header" in row.get("class", []):
             current_option = row.get_text(strip=True)
@@ -249,7 +253,7 @@ def analizi_yap(xml_response, draft_name):
                     
                     if "Amazon Optimized" in current_option: continue
                     
-                    if mil < 300:
+                    if mil < limit:
                         detay = f"✅ FIRSAT! {mil} Mil - Plan: {current_option} - Depo: {dest}"
                         manager.add_log(detay, "success")
                         msg += detay + "\n"
@@ -296,7 +300,7 @@ def poll_results_until_complete(session, base_payload, referer_url):
         except: time.sleep(5)
     return None
 
-def drafti_kopyala(original_draft_action_id):
+def drafti_kopyala(target_date, original_from_loc):
     """
     Kopyalama yapar ve YENİ OLUŞAN DRAFT'IN ADINI döndürür.
     """
@@ -309,7 +313,7 @@ def drafti_kopyala(original_draft_action_id):
     df = html_tabloyu_parse_et(res.text)
     if df.empty: return None
 
-    ilgili_satir = df[df["Action ID"] == original_draft_action_id]
+    ilgili_satir = df[df["Created"] == target_date]
     if ilgili_satir.empty: return None
     
     copy_id = ilgili_satir.iloc[0]["Copy ID"]
@@ -374,7 +378,37 @@ def drafti_kopyala(original_draft_action_id):
                 new_draft_name = name_input.get("value")
             
             manager.add_log(f"✅ Kopyalandı: {new_draft_name}")
-            return new_draft_name
+
+            time.sleep(1) # Sistemin oturması için
+            res_check = manager.session.get(DRAFT_PAGE_URL)
+            df_check = html_tabloyu_parse_et(res_check.text)
+
+            yeni_satir = df_check[df_check["Draft Name"] == new_draft_name]
+
+            yeni_tarih = None
+            if not yeni_satir.empty:
+                yeni_tarih = yeni_satir.iloc[0]["Created"]
+                new_from_loc = yeni_satir.iloc[0]["From"]
+                
+                target_keyword = " ".join(original_from_loc.lower().split())
+                current_loc_cleaned = " ".join(new_from_loc.lower().split())
+                
+                adres_uyusuyor_mu = target_keyword in current_loc_cleaned
+                
+                if not adres_uyusuyor_mu:
+                    manager.add_log(f"⚠️ Adres uyuşmazlığı! Beklenen: {original_from_loc} -> Gelen: {new_from_loc}", "warning")
+                    
+                    adresi_duzelt_backend(full_redirect_url, original_from_loc)
+                else:
+                    manager.add_log("✅ Adres doğrulandı.", "success")
+            else:
+                manager.add_log("⚠️ Yeni kopya listede henüz görünmüyor.", "warning")
+
+            # --- DÖNÜŞ DEĞERİ: ARTIK SADECE İSİM DEĞİL, PAKET DÖNÜYORUZ ---
+            if yeni_tarih:
+                return {"name": new_draft_name, "date": yeni_tarih}
+            else:
+                return None
             
         except Exception as e: 
             print(f"Kopya isim hatası: {e}")
@@ -396,6 +430,7 @@ def drafti_planla_backend(target_date, draft_name):
             manager.add_log(f"⚠️ {draft_name} listede bulunamadı! (Tarih eşleşmedi)", "warning")
             return None
         current_action_id = target_row.iloc[0]["Action ID"]
+        original_from_loc = target_row.iloc[0]["From"]
 
         form_data = form_verilerini_topla(main_res.text)
         action_payload = {
@@ -457,14 +492,14 @@ def drafti_planla_backend(target_date, draft_name):
             
             if firsat:
                 # Kopyala ve yeni ismi döndür
-                yeni_isim = drafti_kopyala(current_action_id)
-                if yeni_isim:
+                sonuc_paketi = drafti_kopyala(target_date, original_from_loc)
+                if sonuc_paketi:
                     manager.add_log(f"{draft_name} için fırsat bulundu, kopyalanıyor...", "success")
                     
                     # --- KRİTİK: LİSTEYİ GÜNCELLE ---
                     # Otomatik görevde yeni kopyayı takip listesine ekle, eskisini çıkar
                     # Bu mantığı aşağıda `gorev` fonksiyonunda da yönetebiliriz ama buradan dönmek en temizi.
-                    return yeni_isim 
+                    return sonuc_paketi 
             
             manager.add_log(f"{draft_name} tamamlandı, fırsat yok.", "warning")
             return None
@@ -474,6 +509,144 @@ def drafti_planla_backend(target_date, draft_name):
     except Exception as e:
         manager.add_log(f"Hata ({draft_name}): {str(e)}", "error")
         return None
+
+def adresi_duzelt_backend(draft_url, hedef_adres_keyword):
+    manager.add_log(f"🛠️ Adres düzeltme operasyonu başlatılıyor... Hedef: {hedef_adres_keyword}", "warning")
+    
+    try:
+        # --- ADIM 1: EDIT MODALINI AÇMAK ---
+        
+        # 1.a) Sayfadaki güncel verileri topla
+        res_main = manager.session.get(draft_url)
+        form_data = form_verilerini_topla(res_main.text)
+        current_viewstate = form_data.get("javax.faces.ViewState")
+        
+        soup = BeautifulSoup(res_main.text, 'html.parser')
+
+        edit_link = soup.find("a", title="Change 'Ship From' address")
+        
+        if not edit_link:
+            edit_link = soup.find("a", id=re.compile(r"ship_from_address_edit"))
+            
+        if not edit_link:
+            pencil_icon = soup.find("i", class_="pi-pencil")
+            if pencil_icon:
+                edit_link = pencil_icon.find_parent("a")
+
+        if not edit_link:
+            manager.add_log("❌ Adres düzenleme (Kalem) butonu sayfada bulunamadı!", "error")
+            return False
+
+        edit_btn_id = edit_link.get("id")
+        
+        # 1.b) Payload 1 Hazırla (Modalı Render Etmek İçin)
+        payload_open = {
+            "javax.faces.partial.ajax": "true",
+            "javax.faces.source": edit_btn_id,
+            "javax.faces.partial.execute": edit_btn_id,
+            "javax.faces.partial.render": "addressDialog:addressForm:addressTable", # Tabloyu render et
+            edit_btn_id: edit_btn_id,
+            "mainForm": "mainForm",
+            **form_data # Sayfadaki diğer inputları da ekle
+        }
+        
+        # 1.c) İsteği Gönder
+        res_open = manager.session.post(draft_url, data=payload_open)
+        
+        # --- ADIM 2: MODAL İÇERİĞİNİ PARSE ET VE HEDEFİ BUL ---
+        
+        # 2.a) Yeni ViewState'i Yakala (Çok Önemli!)
+        # Response 1 içinde ViewState güncelleniyor, onu almalıyız.
+        match_vs = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res_open.text)
+        if match_vs:
+            current_viewstate = match_vs.group(1)
+            # Form data'yı güncelle
+            form_data["javax.faces.ViewState"] = current_viewstate
+            
+        # 2.b) Modal HTML'ini Çıkar (CDATA içindedir)
+        # addressDialog:addressForm:addressTable update bloğunu bul
+        xml_soup = BeautifulSoup(res_open.text, 'xml') # XML parser kullanıyoruz response için
+        update_tag = xml_soup.find("update", {"id": "addressDialog:addressForm:addressTable"}) # Tam ID'yi ara
+        
+        if not update_tag:
+             # ID ile bulamazsa alternatif (Data Table ID'si genelde sabittir ama yine de)
+             html_parts = re.findall(r'<!\[CDATA\[(.*?)]]>', res_open.text, re.DOTALL)
+             modal_html = "".join(html_parts)
+        else:
+             modal_html = update_tag.text
+
+        modal_soup = BeautifulSoup(modal_html, 'html.parser')
+        
+        # 2.c) Hedef Satırı ve RowKey'i Bul
+        rows = modal_soup.find_all("tr", role="row")
+        target_row_key = None
+        target_row_index = None
+        
+        for index, row in enumerate(rows):
+            # Satırdaki metinleri kontrol et
+            row_text = row.get_text(" ", strip=True).lower()
+            
+            # Hedef kelime (örn: new jersey) satırda geçiyor mu?
+            if hedef_adres_keyword.lower() in row_text:
+                target_row_key = row.get("data-rk") # İŞTE BU! (ab2a6e...)
+                target_row_index = row.get("data-ri")
+                manager.add_log(f"✅ Hedef satır bulundu. Key: {target_row_key}", "info")
+                break
+        
+        if not target_row_key:
+            manager.add_log(f"❌ '{hedef_adres_keyword}' içeren satır modalda bulunamadı.", "error")
+            return False
+
+        # --- ADIM 3: SEÇİMİ GÖNDER (SELECT BUTTON CLICK) ---
+        
+        # 3.a) Select Butonunu Bul (Payload 2'deki source)
+        # Genelde tablonun footer'ındadır veya ID'si j_idt ile başlar.
+        # Senin paylaştığın payload'da kaynak: addressDialog:addressForm:addressTable:j_idt156
+        # Modal HTML içinde butonu bulmaya çalışalım
+        select_btn = modal_soup.find("button", text=lambda x: x and "Select" in x)
+        if not select_btn:
+             # Text ile bulamazsak class ile
+             select_btn = modal_soup.find("button", class_="ui-button")
+        
+        # ID'yi dinamik alalım (Logda 156 bitiyordu ama değişebilir)
+        select_btn_id = select_btn.get("id") if select_btn else "addressDialog:addressForm:addressTable:j_idt156"
+        
+        # Eğer modal HTML'inde ID tam path ile gelmiyorsa (bazen sadece son kısmı gelir),
+        # Payload'daki örneği baz alarak prefix ekleyebiliriz.
+        if ":" not in select_btn_id:
+             select_btn_id = f"addressDialog:addressForm:addressTable:{select_btn_id}"
+
+        # 3.b) Payload 2 Hazırla (Seçim İşlemi)
+        # Modal içindeki form inputlarını (radio, inputs) toplayalım
+        # JSF güvenlik gereği tablodaki inputları da isteyebilir.
+        modal_inputs = form_verilerini_topla(modal_html)
+        
+        payload_select = {
+            "javax.faces.partial.ajax": "true",
+            "javax.faces.source": select_btn_id,
+            "javax.faces.partial.execute": "addressDialog:addressForm", # Tüm modal formunu execute et
+            # "javax.faces.partial.render": "mainForm:draftInfo", # Senin payload'da render yoktu ama JSF genelde ister
+            select_btn_id: select_btn_id,
+            "addressDialog:addressForm": "addressDialog:addressForm", # Form ID
+            "addressDialog:addressForm:addressTable_radio": "on", # Radio mode
+            "addressDialog:addressForm:addressTable_selection": target_row_key, # KRİTİK VERİ BURADA
+            "javax.faces.ViewState": current_viewstate,
+            **modal_inputs # Modal içindeki input değerlerini ekle (satırlar vb.)
+        }
+        
+        # 3.c) İsteği Gönder
+        res_select = manager.session.post(draft_url, data=payload_select)
+        
+        if res_select.status_code == 200 and "error" not in res_select.text.lower():
+            manager.add_log("✅ Adres başarıyla değiştirildi.", "success")
+            return True
+        else:
+            manager.add_log("❌ Adres seçim isteği başarısız oldu.", "error")
+            return False
+
+    except Exception as e:
+        manager.add_log(f"Adres düzeltme hatası: {e}", "error")
+        return False
 
 def gorev():
     # Artık st.session_state yerine Global Manager'dan listeyi alıyoruz
@@ -492,35 +665,19 @@ def gorev():
         d_name = item['name']
         d_date = item['date']
         
-        yeni_kopya_ismi = drafti_planla_backend(d_date, d_name)
+        sonuc_paketi = drafti_planla_backend(d_date, d_name)
         
-        if yeni_kopya_ismi:
-            manager.add_log(f"🔄 Listede güncelleniyor: {d_name} -> {yeni_kopya_ismi}", "success")
+        if sonuc_paketi:
+            yeni_isim = sonuc_paketi['name']
+            yeni_tarih = sonuc_paketi['date']
             
-            # --- LİSTE GÜNCELLEME ---
-            # Yeni kopyanın Action ID'sini bulmamız lazım.
-            # Bunun için sayfayı bir kez çekip parse etmeliyiz.
-            try:
-                res = manager.session.get(DRAFT_PAGE_URL)
-                df = html_tabloyu_parse_et(res.text)
-                
-                # Yeni ismi listede bul
-                yeni_satir = df[df["Draft Name"] == yeni_kopya_ismi]
-                
-                if not yeni_satir.empty:
-                    new_date = yeni_satir.iloc[0]["Created"]
-                    
-                    # Watch List'teki bu öğeyi güncelle
-                    manager.watch_list[i] = {
-                        'name': yeni_kopya_ismi,
-                        'date': new_date
-                    }
-                    degisiklik_var = True
-                    print(f"✅ Takip listesi güncellendi: {d_name} -> {yeni_kopya_ismi} ({new_date})")
-                else:
-                    print("   ⚠️ Yeni kopya listede bulunamadı (Zamanlama sorunu olabilir).")
-            except Exception as e:
-                print(f"   ❌ Liste güncelleme hatası: {e}")
+            manager.add_log(f"🔄 Listede güncelleniyor: {d_name} -> {yeni_isim}", "success")
+            
+            manager.watch_list[i] = {
+                'name': yeni_isim,
+                'date': yeni_tarih
+            }
+            print(f"✅ Takip listesi güncellendi: {yeni_isim} ({yeni_tarih})")
 
 # --- SCHEDULER BAŞLATMA ---
 @st.cache_resource
@@ -534,6 +691,28 @@ scheduler = start_scheduler()
 
 # --- UI TASARIMI ---
 st.set_page_config(page_title="Kargo Paneli", layout="wide")
+
+with st.sidebar:
+    st.header("⚙️ Bot Ayarları")
+    
+    # Mil Ayarı
+    yeni_sinir = st.number_input(
+        "Fırsat Mil Sınırı (Mil)", 
+        min_value=50, 
+        max_value=3000, 
+        value=manager.mile_threshold, # Varsayılan olarak manager'daki değeri göster
+        step=50,
+        help="Planlanan kargo bu mesafenin altındaysa otomatik kopya oluşturulur."
+    )
+    
+    # Değer değişirse Manager'ı güncelle
+    if yeni_sinir != manager.mile_threshold:
+        manager.set_mile_threshold(yeni_sinir)
+        st.toast(f"✅ Sınır güncellendi: {yeni_sinir} Mil")
+        
+    st.divider()
+    st.caption(f"Aktif Sınır: **{manager.mile_threshold} Mil**")
+
 st.title("📑 Otomatik Kargo Botu")
 
 
