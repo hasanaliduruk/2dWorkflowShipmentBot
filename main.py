@@ -172,6 +172,8 @@ def html_tabloyu_parse_et(html_content):
 
             from_loc = cells[3].get_text(strip=True)
             created_date = cells[10].get_text(strip=True)
+            units = cells[9].get_text(strip=True)
+            skus = cells[8].get_text(strip=True)
             
             # --- AUTO SELECT MANTIĞI ---
             # Eğer bu draft ismi, oluşturduğumuz kopyalar listesindeyse TRUE yap
@@ -182,6 +184,8 @@ def html_tabloyu_parse_et(html_content):
                 "Seç": secili_mi, # Dinamik seçim
                 "Draft Name": draft_name,
                 "From": from_loc,
+                "SKUs": skus,
+                "Units": units,
                 "Created": created_date,
                 "Action ID": row_action_id,
                 "Copy ID": copy_action_id,
@@ -575,6 +579,8 @@ with col1:
             df,
             column_config={
                 "Seç": st.column_config.CheckboxColumn("Ekle", default=False),
+                "Action ID": None,
+                "Copy ID": None
             },
             disabled=["Draft Name", "From", "Created"],
             hide_index=True,
