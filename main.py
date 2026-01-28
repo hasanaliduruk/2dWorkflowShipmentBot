@@ -53,8 +53,8 @@ manager = get_manager()
 # --- HESAP SEÇİM AYARLARI ---
 # Buradaki verileri kendi DB veya config dosyanızdan çekebilirsiniz.
 ACCOUNTS = [
-    #{"id": "babil", "name": "Babil Design", "flag": "🇺🇸"},
-    #{"id": "kwiek", "name": "KWIEK-USA", "flag": "🇺🇸"},
+    {"id": "babil", "name": "Babil Design", "flag": "🇺🇸"},
+    {"id": "kwiek", "name": "KWIEK-USA", "flag": "🇺🇸"},
 ]
 
 # Varsayılan seçim yoksa ilkini seç
