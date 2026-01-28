@@ -390,12 +390,12 @@ def drafti_kopyala(target_date, original_from_loc):
             df_check = html_tabloyu_parse_et(res_check.text)
             yeni_satir = df_check[df_check["Draft Name"] == new_draft_name]
 
-            """
+            
             
             if not yeni_satir.empty:
                 yeni_tarih = yeni_satir.iloc[0]["Created"]
                 return {"name": new_draft_name, "date": yeni_tarih}
-            
+            """
             return None
             
         except Exception as e: 
