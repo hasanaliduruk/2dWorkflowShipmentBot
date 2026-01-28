@@ -179,12 +179,12 @@ def html_tabloyu_parse_et(html_content):
 
             secili_mi = created_date in takip_edilen_tarihler
             veri_listesi.append({
-                "Action ID": row_action_id,
-                "Copy ID": copy_action_id,
                 "Seç": secili_mi, # Dinamik seçim
                 "Draft Name": draft_name,
                 "From": from_loc,
-                "Created": created_date
+                "Created": created_date,
+                "Action ID": row_action_id,
+                "Copy ID": copy_action_id,
             })
             
         except Exception as e: 
@@ -532,32 +532,7 @@ scheduler = start_scheduler()
 st.set_page_config(page_title="Kargo Paneli", layout="wide")
 st.title("📑 Otomatik Kargo Botu")
 
-# 1. BÖLÜM: TAKİP LİSTESİ YÖNETİMİ
-st.subheader("📋 Aktif Takip Listesi")
-watch_df = manager.get_watch_list_df()
 
-if not watch_df.empty:
-    # Kullanıcıya silme imkanı veren editör
-    edited_watch_df = st.data_editor(
-        watch_df,
-        column_config={
-            "name": "Taslak Adı",
-            "date": "Created"
-        },
-        num_rows="dynamic", # Satır ekleme/silme açık
-        key="watch_list_editor",
-        width='stretch'
-    )
-    
-    # Data editor'den gelen güncel veriyi manager'a kaydet
-    # Sadece butonla kaydetmek daha güvenli (her harfte tetiklenmemesi için)
-    if st.button("💾 Listeyi Güncelle"):
-        yeni_liste_dict = edited_watch_df.to_dict("records")
-        manager.update_watch_list(yeni_liste_dict)
-        st.success("Takip listesi güncellendi!")
-        st.rerun()
-else:
-    st.info("Takip listesi şu an boş. Aşağıdan taslak seçip ekleyin.")
 
 st.divider()
 
@@ -661,4 +636,33 @@ with col2:
             
     # Otomatik yenileme notu
     st.caption("Loglar arka planda birikir. Sayfayı yenileyerek veya butona basarak görebilirsiniz.")
+
+st.divider()
+
+    # 1. BÖLÜM: TAKİP LİSTESİ YÖNETİMİ
+st.subheader("📋 Aktif Takip Listesi")
+watch_df = manager.get_watch_list_df()
+
+if not watch_df.empty:
+    # Kullanıcıya silme imkanı veren editör
+    edited_watch_df = st.data_editor(
+        watch_df,
+        column_config={
+            "name": "Taslak Adı",
+            "date": "Created"
+        },
+        num_rows="dynamic", # Satır ekleme/silme açık
+        key="watch_list_editor",
+        width='stretch'
+    )
+    
+    # Data editor'den gelen güncel veriyi manager'a kaydet
+    # Sadece butonla kaydetmek daha güvenli (her harfte tetiklenmemesi için)
+    if st.button("💾 Listeyi Güncelle"):
+        yeni_liste_dict = edited_watch_df.to_dict("records")
+        manager.update_watch_list(yeni_liste_dict)
+        st.success("Takip listesi güncellendi!")
+        st.rerun()
+else:
+    st.info("Takip listesi şu an boş. Aşağıdan taslak seçip ekleyin.")
 
