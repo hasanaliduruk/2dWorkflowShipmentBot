@@ -672,49 +672,23 @@ def drafti_kopyala(target_date):
             new_page_res = manager.session.get(full_redirect_url)    
             soup_new = BeautifulSoup(new_page_res.text, 'html.parser')
 
-            # --- RENAME LOGIC START ---
             name_input = soup_new.find("input", {"name": lambda x: x and "draft_name" in x})
-            final_draft_name = "Bilinmeyen Kopya"
-            
-            if name_input:
-                current_raw_name = name_input.get("value", "")
-                input_id = name_input.get("id") # Dinamik ID al (örn: mainForm:drafts:0:j_idt275)
-                
-                # 1. Regex ile " - COPY" temizle
-                clean_base = re.sub(r'(\s*-\s*copy|\s*copy|\s*-\s*clone)+', '', current_raw_name, flags=re.IGNORECASE).strip()
-                
-                # 2. Benzersizlik için saat ekle (örn: 14:20)
-                unique_ts = datetime.now().strftime("%d/%m %H:%M:%S")
-                if len(clean_base) > 30:
-                    clean_base = clean_base[:30]
-
-                new_clean_name = f"{clean_base} {unique_ts}"
-                
-                # 3. ViewState al (Rename isteği için gerekli)
-                vs_input = soup_new.find("input", {"name": "javax.faces.ViewState"})
-                vs = vs_input.get("value") if vs_input else current_vs
-                
-                # 4. Rename Fonksiyonunu Çağır
-                if rename_draft_backend(manager.session, input_id, new_clean_name, vs):
-                    final_draft_name = new_clean_name
-                    manager.add_log(f"✏️ İsim düzeltildi: {new_clean_name}")
-                else:
-                    final_draft_name = current_raw_name # Başarısız olursa eski ismi kullan
-            # --- RENAME LOGIC END ---
+            new_draft_name = name_input.get("value") if name_input else "Bilinmeyen Kopya"
 
             loc_span = soup_new.find("span", {"id": "mainForm:draftInfo:0:ship_from_address"})
             new_location = loc_span.get_text(strip=True) if loc_span else ""
 
-            manager.add_log(f"✅ Kopyalandı: {final_draft_name}")
+            manager.add_log(f"✅ Kopyalandı: {new_draft_name}")
             
             if base_loc.lower() not in new_location.lower():
                 manager.add_log(f"📍 Adres düzeltiliyor: {new_location} -> {base_loc}", "warning")
                 address_request_handler(full_redirect_url, target_date, new_page_res)
             
             time.sleep(1.5) # Sistemin oturması için
+            manager.add_log("📋 Listeye dönülüyor ve isim düzeltiliyor...", "info")
             res_check = manager.session.get(DRAFT_PAGE_URL)
             df_check = html_tabloyu_parse_et(res_check.text)
-            yeni_satir = df_check[df_check["Draft Name"] == final_draft_name]
+            yeni_satir = df_check[df_check["Draft Name"] == new_draft_name]
 
             if not yeni_satir.empty:
                 yeni_tarih = yeni_satir.iloc[0]["Created"]
@@ -733,7 +707,7 @@ def drafti_kopyala(target_date):
                 #     }
                 # )
 
-                return {"name": final_draft_name, "date": yeni_tarih, "loc": loc}
+                return {"name": new_draft_name, "date": yeni_tarih, "loc": loc}
             
             return None
             
