@@ -359,18 +359,76 @@ def veriyi_dataframe_yap():
         return (df, None) if not df.empty else (None, "Tablo boş.")
     except Exception as e: return None, str(e)
 
-def teams_bildirim_gonder(mesaj):
+def teams_bildirim_gonder(title, message, facts=None, status="info"):
+    """
+    Sends a consolidated Adaptive Card to Teams.
+    """
+    # 1. Color Mapping
+    color_map = {"success": "Good", "error": "Attention", "warning": "Warning", "info": "Accent"}
+    theme_color = color_map.get(status, "Accent")
+    
+    # 2. Prepare FactSet (The Table)
+    fact_items = []
+    if facts:
+        for k, v in facts.items():
+            fact_items.append({"title": k, "value": str(v)})
+
+    # 3. Construct Payload
+    card_body = [
+        {
+            "type": "Container",
+            "style": theme_color,
+            "bleed": True,
+            "items": [
+                {
+                    "type": "TextBlock",
+                    "text": f"{'✅' if status=='success' else 'ℹ️'} {title}",
+                    "weight": "Bolder",
+                    "size": "Medium",
+                    "color": "Light" if status in ["error", "info"] else "Dark"
+                }
+            ]
+        },
+        {
+            "type": "Container",
+            "items": [
+                {
+                    "type": "TextBlock",
+                    "text": message,
+                    "wrap": True,
+                    "isSubtle": True,
+                    "spacing": "Small"
+                }
+            ]
+        }
+    ]
+
+    # Add the table if we have facts
+    if fact_items:
+        card_body[1]["items"].append({
+            "type": "FactSet",
+            "facts": fact_items,
+            "separator": True,
+            "spacing": "Medium"
+        })
+
     payload = {
-        "type": "AdaptiveCard",
-        "body": [
-            {"type": "TextBlock", "size": "Medium", "weight": "Bolder", "text": "Kargo İşlem Raporu"},
-            {"type": "TextBlock", "text": mesaj, "wrap": True}
-        ],
-        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-        "version": "1.4"
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "version": "1.4",
+                "msteams": {"width": "Full"},
+                "body": card_body
+            }
+        }]
     }
-    try: manager.session.post(TEAMS_WEBHOOK_URL, json=payload, headers={'Content-Type': 'application/json'})
-    except: pass
+
+    try:
+        manager.session.post(TEAMS_WEBHOOK_URL, json=payload)
+    except Exception as e:
+        print(f"Teams Error: {e}")
 
 def analizi_yap(xml_response, draft_name):
     manager.add_log("📊 Sonuçlar analiz ediliyor...")
@@ -387,7 +445,11 @@ def analizi_yap(xml_response, draft_name):
     firsat_bulundu = False
     msg = "=============" + draft_name + "=============\n\n"
     
+    bulunan_firsatlar = {} # Dictionary to store merged results
+    firsat_sayisi = 0
+
     for row in rows:
+        # Check if it's a Header Row (e.g., "Shipping Option 1")
         if "ui-rowgroup-header" in row.get("class", []):
             current_option = row.get_text(strip=True)
             continue
@@ -403,17 +465,28 @@ def analizi_yap(xml_response, draft_name):
                     if "Amazon Optimized" in current_option: continue
                     
                     if mil < manager.mile_threshold:
-                        detay = f"✅ FIRSAT! {mil} Mil - Plan: {current_option} - Depo: {dest}"
-                        manager.add_log(detay, "success")
-                        msg += detay + "\n"
-                        firsat_bulundu = True
+                        # LOGGING (Keep internal logs for each find)
+                        manager.add_log(f"✅ FIRSAT: {mil} Mil ({dest}) - {current_option}", "success")
+                        
+                        # COLLECT DATA
+                        # Key = Plan Name, Value = Details
+                        bulunan_firsatlar[current_option] = f"{mil} Mil ➡️ {dest}"
+                        firsat_sayisi += 1
                     else:
-                        detay = f"❌ {mil} Mil ({dest}) - Uygun değil"
-                        msg += detay + "\n"
-                        manager.add_log(detay)
+                        manager.add_log(f"❌ {mil} Mil ({dest}) - Uygun değil")
                 except: pass
-    if msg: teams_bildirim_gonder(msg)
-    return firsat_bulundu
+
+    # --- SEND SINGLE NOTIFICATION ---
+    if firsat_sayisi > 0:
+        teams_bildirim_gonder(
+            title=f"{firsat_sayisi} Adet Fırsat Bulundu!",
+            message=f"**{draft_name}** için aşağıdaki planlar kriterlerinize ({manager.mile_threshold} mil altı) uyuyor:",
+            status="success",
+            facts=bulunan_firsatlar # Passes the dictionary we built
+        )
+        return True # Return True so the bot knows to proceed with Copying
+
+    return False
 
 def poll_results_until_complete(session, base_payload, referer_url):
     max_retries = 60
@@ -539,6 +612,20 @@ def drafti_kopyala(target_date):
             if not yeni_satir.empty:
                 yeni_tarih = yeni_satir.iloc[0]["Created"]
                 loc = yeni_satir.iloc[0]["From"]
+                
+                # SUCCESS NOTIFICATION
+                teams_bildirim_gonder(
+                    title="Kopyalama Başarılı",
+                    message="Yeni taslak oluşturuldu ve takip listesine eklendi.",
+                    status="info",
+                    facts={
+                        "Eski Taslak": str(target_date), # Or original name if you pass it
+                        "Yeni Taslak": new_draft_name,
+                        "Lokasyon": loc,
+                        "Tarih": yeni_tarih
+                    }
+                )
+
                 return {"name": new_draft_name, "date": yeni_tarih, "loc": loc}
             
             return None
