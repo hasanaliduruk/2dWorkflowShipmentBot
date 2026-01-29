@@ -16,7 +16,10 @@ class GlobalManager:
         self.watch_list = []
         # Logs
         self.logs = deque(maxlen=50)
-        
+
+        self.mile_threshold = 300  # Default value
+        self.mins_threshold = 30   # Default value
+
         # --- CRITICAL FIX: Session managed here, not in st.session_state ---
         self.session = requests.Session()
         self.session.headers.update({
@@ -36,6 +39,12 @@ class GlobalManager:
         self.logs.appendleft(log_entry)
         print(log_entry)
 
+    def set_mile_threshold(self, val):
+        self.mile_threshold = val
+
+    def set_mins_threshold(self, val):
+        self.mins_threshold = val
+
     def update_watch_list(self, new_list):
         self.watch_list = new_list
 
@@ -48,21 +57,6 @@ def get_manager():
 
 manager = get_manager()
 
-# --- HESAP SEÇİM AYARLARI ---
-# Buradaki verileri kendi DB veya config dosyanızdan çekebilirsiniz.
-ACCOUNTS = [
-    {"id": "babil", "name": "Babil Design", "flag": "🇺🇸"},
-    {"id": "kwiek", "name": "KWIEK-USA", "flag": "🇺🇸"},
-]
-
-# Varsayılan seçim yoksa ilkini seç
-if "selected_account" not in st.session_state:
-    st.session_state.selected_account = ACCOUNTS[0]
-
-def change_account(account):
-    st.session_state.selected_account = account
-    # Burada global manager'a hesap bilgisini güncelleyebilirsiniz
-    # manager.current_account = account['id'] gibi
 
 # --- KONFIGURASYON ---
 try:
@@ -70,9 +64,9 @@ try:
     USER_EMAIL = st.secrets["DB_EMAIL"]
     USER_PASS = st.secrets["DB_PASS"]
 except:
-    TEAMS_WEBHOOK_URL = "https://default27f4366a08064505823abd8c2586ed.d2.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/86964c4f6b4c4eda99a272fe4507b501/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=3JaIQ1Mshm5w6hfQzuDZXYS7HpRxDtOqJwE3ygy0SSA"
-    USER_EMAIL = "sales@buyable.net"
-    USER_PASS = "hasali2603"
+    TEAMS_WEBHOOK_URL = ""
+    USER_EMAIL = ""
+    USER_PASS = ""
 
 BASE_URL = "https://app.2dworkflow.com"
 LOGIN_URL = f"{BASE_URL}/login.jsf"
@@ -408,7 +402,7 @@ def analizi_yap(xml_response, draft_name):
                     
                     if "Amazon Optimized" in current_option: continue
                     
-                    if mil < 2000:
+                    if mil < manager.mile_threshold:
                         detay = f"✅ FIRSAT! {mil} Mil - Plan: {current_option} - Depo: {dest}"
                         manager.add_log(detay, "success")
                         msg += detay + "\n"
@@ -673,7 +667,7 @@ def address_request_handler(draft_url, target_date):
     # STRICT SEARCH: Find the script tag containing the specific function name
     # We use re.compile to match the content partially
     secret_btn_id = ""
-    target_script = draft_soup.find('script', string=re.compile(r'updateAddress\\s*='))
+    target_script = draft_soup.find('script', string=re.compile(r'updateAddress\s*='))
 
     if target_script and target_script.has_attr('id'):
         found_id = target_script['id']
@@ -713,7 +707,7 @@ def address_request_handler(draft_url, target_date):
     match_vs = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', xml_data.text)
     if match_vs: current_viewstate = match_vs.group(1)
 
-    outer_soup = BeautifulSoup(xml_data, 'xml')
+    outer_soup = BeautifulSoup(xml_data.text, 'xml')
 
     update_tag = outer_soup.find('update', {'id': 'addressDialog:addressForm:addressTable'})
 
@@ -820,18 +814,61 @@ def gorev():
 @st.cache_resource
 def start_scheduler():
     sched = BackgroundScheduler()
-    sched.add_job(gorev, 'interval', minutes=30, max_instances=1, misfire_grace_time=None)
+    sched.add_job(gorev, 'interval', minutes=manager.mins_threshold, id='ana_gorev', max_instances=1, misfire_grace_time=None)
     sched.start()
     return sched
 
 scheduler = start_scheduler()
 
 # --- UI TASARIMI ---
+# --- UI TASARIMI ---
 st.set_page_config(page_title="Kargo Paneli", layout="wide")
+
+# --- SIDEBAR SETTINGS ---
+with st.sidebar:
+    st.header("⚙️ Bot Ayarları")
+    
+    # Mil Ayarı
+    mile_limit = st.number_input(
+        "Fırsat Mil Sınırı (Mil)", 
+        min_value=0, 
+        max_value=5000, 
+        value=manager.mile_threshold, 
+        step=50,
+        help="Planlanan kargo bu mesafenin altındaysa otomatik kopya oluşturulur."
+    )
+    
+    # Update Manager if changed
+    if mile_limit != manager.mile_threshold:
+        manager.set_mile_threshold(mile_limit)
+        st.toast(f"✅ Sınır güncellendi: {mile_limit} Mil")
+
+    # Min Ayarı
+    min_limit = st.number_input(
+        "Tekrar deneme dakikası", 
+        min_value=1, 
+        max_value=500, 
+        value=manager.mins_threshold, 
+        step=5,
+        help="Botun kaç dakikada bir kontrol edeceğini belirler."
+    )
+    
+    # Update Manager and Reschedule Job if changed
+    if min_limit != manager.mins_threshold:
+        manager.set_mins_threshold(min_limit)
+        
+        try:
+            scheduler.reschedule_job('ana_gorev', trigger='interval', minutes=min_limit)
+            st.toast(f"✅ Sıklık güncellendi: {min_limit} dakikada bir çalışacak.")
+            manager.add_log(f"Zamanlayıcı güncellendi: Yeni aralık {min_limit} dk.", "warning")
+        except Exception as e:
+            st.error(f"Zamanlayıcı güncellenemedi (Bot çalışmıyor olabilir): {e}")
+        
+    st.divider()
+    st.caption(f"Aktif Mil Sınır: **{manager.mile_threshold} Mil**")
+    st.caption(f"Aktif Dakika Sınır: **{manager.mins_threshold} Dakika**")
+
 st.title("📑 Otomatik Kargo Botu")
-
-
-
 st.divider()
 
 # 2. BÖLÜM: TASLAK SEÇİMİ (MEVCUT LİSTE)
