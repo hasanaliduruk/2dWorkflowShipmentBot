@@ -16,7 +16,10 @@ class GlobalManager:
         self.watch_list = []
         # Logs
         self.logs = deque(maxlen=50)
-        
+
+        self.mile_threshold = 300  # Default value
+        self.mins_threshold = 30   # Default value
+
         # --- CRITICAL FIX: Session managed here, not in st.session_state ---
         self.session = requests.Session()
         self.session.headers.update({
@@ -36,6 +39,12 @@ class GlobalManager:
         self.logs.appendleft(log_entry)
         print(log_entry)
 
+    def set_mile_threshold(self, val):
+        self.mile_threshold = val
+
+    def set_mins_threshold(self, val):
+        self.mins_threshold = val
+
     def update_watch_list(self, new_list):
         self.watch_list = new_list
 
@@ -48,21 +57,6 @@ def get_manager():
 
 manager = get_manager()
 
-# --- HESAP SEÇİM AYARLARI ---
-# Buradaki verileri kendi DB veya config dosyanızdan çekebilirsiniz.
-ACCOUNTS = [
-    {"id": "babil", "name": "Babil Design", "flag": "🇺🇸"},
-    {"id": "kwiek", "name": "KWIEK-USA", "flag": "🇺🇸"},
-]
-
-# Varsayılan seçim yoksa ilkini seç
-if "selected_account" not in st.session_state:
-    st.session_state.selected_account = ACCOUNTS[0]
-
-def change_account(account):
-    st.session_state.selected_account = account
-    # Burada global manager'a hesap bilgisini güncelleyebilirsiniz
-    # manager.current_account = account['id'] gibi
 
 # --- KONFIGURASYON ---
 try:
@@ -70,9 +64,9 @@ try:
     USER_EMAIL = st.secrets["DB_EMAIL"]
     USER_PASS = st.secrets["DB_PASS"]
 except:
-    TEAMS_WEBHOOK_URL = "https://default27f4366a08064505823abd8c2586ed.d2.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/86964c4f6b4c4eda99a272fe4507b501/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=3JaIQ1Mshm5w6hfQzuDZXYS7HpRxDtOqJwE3ygy0SSA"
-    USER_EMAIL = "sales@buyable.net"
-    USER_PASS = "hasali2603"
+    TEAMS_WEBHOOK_URL = ""
+    USER_EMAIL = ""
+    USER_PASS = ""
 
 BASE_URL = "https://app.2dworkflow.com"
 LOGIN_URL = f"{BASE_URL}/login.jsf"
@@ -408,7 +402,7 @@ def analizi_yap(xml_response, draft_name):
                     
                     if "Amazon Optimized" in current_option: continue
                     
-                    if mil < 2000:
+                    if mil < manager.mile_threshold:
                         detay = f"✅ FIRSAT! {mil} Mil - Plan: {current_option} - Depo: {dest}"
                         manager.add_log(detay, "success")
                         msg += detay + "\n"
@@ -535,7 +529,7 @@ def drafti_kopyala(target_date):
             
             if base_loc.lower() not in new_location.lower():
                 manager.add_log(f"📍 Adres düzeltiliyor: {new_location} -> {base_loc}", "warning")
-                address_request_handler(full_redirect_url, target_date)
+                address_request_handler(full_redirect_url, target_date, new_page_res)
             
             time.sleep(1.5) # Sistemin oturması için
             res_check = manager.session.get(DRAFT_PAGE_URL)
@@ -632,7 +626,7 @@ def drafti_planla_backend(target_date, draft_name, loc):
                 # Kopyala ve yeni ismi döndür
                 yeni_draft_verisi = drafti_kopyala(target_date)
                 if yeni_draft_verisi:
-                    manager.add_log(f"{draft_name} için fırsat bulundu, kopyalanıyor...", "success")
+                    manager.add_log(f"✅ {draft_name} süreci tamamlandı. Yeni: {yeni_draft_verisi['name']}", "success")
                     
                     # --- KRİTİK: LİSTEYİ GÜNCELLE ---
                     # Otomatik görevde yeni kopyayı takip listesine ekle, eskisini çıkar
@@ -648,7 +642,7 @@ def drafti_planla_backend(target_date, draft_name, loc):
         manager.add_log(f"Hata ({draft_name}): {str(e)}", "error")
         return None
 
-def address_request_handler(draft_url, target_date):
+def address_request_handler(draft_url, target_date, res_draft):
 
     # Get location:
     watch_df = manager.get_watch_list_df()
@@ -664,7 +658,7 @@ def address_request_handler(draft_url, target_date):
     
     # Request the draft page:
 
-    res_draft = manager.session.get(draft_url)
+    # res_draft = manager.session.get(draft_url)
     form_data = form_verilerini_topla(res_draft.text)
     current_viewstate = form_data.get("javax.faces.ViewState")
     draft_soup = BeautifulSoup(res_draft.text, "html.parser")
@@ -673,7 +667,7 @@ def address_request_handler(draft_url, target_date):
     # STRICT SEARCH: Find the script tag containing the specific function name
     # We use re.compile to match the content partially
     secret_btn_id = ""
-    target_script = draft_soup.find('script', string=re.compile(r'updateAddress\\s*='))
+    target_script = draft_soup.find('script', string=re.compile(r'updateAddress\s*='))
 
     if target_script and target_script.has_attr('id'):
         found_id = target_script['id']
@@ -681,7 +675,6 @@ def address_request_handler(draft_url, target_date):
         secret_btn_id = found_id
     else:
         print("Target script not found or has no ID.")
-
     # Find pencil:
 
     edit_link = draft_soup.find("a", title="Change 'Ship From' address")
@@ -713,7 +706,7 @@ def address_request_handler(draft_url, target_date):
     match_vs = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', xml_data.text)
     if match_vs: current_viewstate = match_vs.group(1)
 
-    outer_soup = BeautifulSoup(xml_data, 'xml')
+    outer_soup = BeautifulSoup(xml_data.text, 'xml')
 
     update_tag = outer_soup.find('update', {'id': 'addressDialog:addressForm:addressTable'})
 
@@ -820,18 +813,61 @@ def gorev():
 @st.cache_resource
 def start_scheduler():
     sched = BackgroundScheduler()
-    sched.add_job(gorev, 'interval', minutes=30, max_instances=1, misfire_grace_time=None)
+    sched.add_job(gorev, 'interval', minutes=manager.mins_threshold, id='ana_gorev', max_instances=1, misfire_grace_time=None)
     sched.start()
     return sched
 
 scheduler = start_scheduler()
 
 # --- UI TASARIMI ---
+# --- UI TASARIMI ---
 st.set_page_config(page_title="Kargo Paneli", layout="wide")
+
+# --- SIDEBAR SETTINGS ---
+with st.sidebar:
+    st.header("⚙️ Bot Ayarları")
+    
+    # Mil Ayarı
+    mile_limit = st.number_input(
+        "Fırsat Mil Sınırı (Mil)", 
+        min_value=0, 
+        max_value=5000, 
+        value=manager.mile_threshold, 
+        step=50,
+        help="Planlanan kargo bu mesafenin altındaysa otomatik kopya oluşturulur."
+    )
+    
+    # Update Manager if changed
+    if mile_limit != manager.mile_threshold:
+        manager.set_mile_threshold(mile_limit)
+        st.toast(f"✅ Sınır güncellendi: {mile_limit} Mil")
+
+    # Min Ayarı
+    min_limit = st.number_input(
+        "Tekrar deneme dakikası", 
+        min_value=1, 
+        max_value=500, 
+        value=manager.mins_threshold, 
+        step=5,
+        help="Botun kaç dakikada bir kontrol edeceğini belirler."
+    )
+    
+    # Update Manager and Reschedule Job if changed
+    if min_limit != manager.mins_threshold:
+        manager.set_mins_threshold(min_limit)
+        
+        try:
+            scheduler.reschedule_job('ana_gorev', trigger='interval', minutes=min_limit)
+            st.toast(f"✅ Sıklık güncellendi: {min_limit} dakikada bir çalışacak.")
+            manager.add_log(f"Zamanlayıcı güncellendi: Yeni aralık {min_limit} dk.", "warning")
+        except Exception as e:
+            st.error(f"Zamanlayıcı güncellenemedi (Bot çalışmıyor olabilir): {e}")
+        
+    st.divider()
+    st.caption(f"Aktif Mil Sınır: **{manager.mile_threshold} Mil**")
+    st.caption(f"Aktif Dakika Sınır: **{manager.mins_threshold} Dakika**")
+
 st.title("📑 Otomatik Kargo Botu")
-
-
-
 st.divider()
 
 # 2. BÖLÜM: TASLAK SEÇİMİ (MEVCUT LİSTE)
@@ -857,22 +893,14 @@ with col1:
             
             # DURUM 1: Henüz hesaplar çekilmediyse "Getir" butonu göster
             if not manager.available_accounts:
-                # key="fetch_acc_btn" ekledik ki ID çakışması olmasın
-                with st.spinner("Hesaplar çekiliyor..."):
-                        if not manager.session.cookies: 
-                            login()
-                        fetch_success = fetch_accounts_backend()
-                        if fetch_success:
-                            st.success("Listelendi!")
-                            time.sleep(0.5)
-                            st.rerun()
-                        else:
-                            st.error("Çekilemedi.")
+                # FIX: Logic is now INSIDE the button check
                 if st.button("Hesapları Getir", key="fetch_acc_btn", use_container_width=True):
                     with st.spinner("Hesaplar çekiliyor..."):
                         if not manager.session.cookies: 
                             login()
+                        
                         fetch_success = fetch_accounts_backend()
+                        
                         if fetch_success:
                             st.success("Listelendi!")
                             time.sleep(0.5)
@@ -883,22 +911,17 @@ with col1:
             # DURUM 2: Hesaplar varsa onları listele
             else:
                 for acc in manager.available_accounts:
-                    # Aktif hesabı belirle
                     is_selected = acc.get('is_active', False)
                     btn_style = "primary" if is_selected else "secondary"
-                    
-                    # Eğer flag yoksa varsayılan koy
                     flag = acc.get('flag', '🇺🇸')
                     name_label = f"{flag} {acc['name']}"
                     
-                    # Buton ID'sini (key) unique yapmak için acc['id'] kullanıyoruz
                     if st.button(name_label, 
                                 key=f"btn_switch_{acc['id']}", 
                                 type=btn_style, 
                                 disabled=is_selected, 
                                 use_container_width=True):
                         
-                        # Switch İşlemi
                         with st.spinner(f"{acc['name']} hesabına geçiliyor..."):
                             success = switch_account_backend(acc['id'])
                             if success:
