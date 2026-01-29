@@ -361,74 +361,128 @@ def veriyi_dataframe_yap():
 
 def teams_bildirim_gonder(title, message, facts=None, status="info"):
     """
-    Sends a consolidated Adaptive Card to Teams.
+    Sends a high-contrast Adaptive Card with dividers between items.
     """
-    # 1. Color Mapping
-    color_map = {"success": "Good", "error": "Attention", "warning": "Warning", "info": "Accent"}
-    theme_color = color_map.get(status, "Accent")
+    # 1. Color and Icon Logic
+    status_map = {
+        "success": ("good", "✅"), 
+        "error": ("attention", "❌"), 
+        "warning": ("warning", "⚠️"), 
+        "info": ("accent", "ℹ️")
+    }
+    theme_color, icon = status_map.get(status, ("accent", "ℹ️"))
     
-    # 2. Prepare FactSet (The Table)
-    fact_items = []
-    if facts:
-        for k, v in facts.items():
-            fact_items.append({"title": k, "value": str(v)})
-
-    # 3. Construct Payload
+    # 2. Construct Base Card Body
     card_body = [
+        # --- HEADER (Color Bar) ---
         {
             "type": "Container",
             "style": theme_color,
-            "bleed": True,
+            "padding": "Default",
             "items": [
                 {
                     "type": "TextBlock",
-                    "text": f"{'✅' if status=='success' else 'ℹ️'} {title}",
+                    "text": f"{icon} {title}",
                     "weight": "Bolder",
                     "size": "Medium",
-                    "color": "Light" if status in ["error", "info"] else "Dark"
+                    "color": "Light" if status == "error" else "Default"
                 }
             ]
         },
+        # --- MESSAGE BODY ---
         {
             "type": "Container",
+            "padding": "Default",
             "items": [
                 {
                     "type": "TextBlock",
                     "text": message,
                     "wrap": True,
-                    "isSubtle": True,
-                    "spacing": "Small"
+                    "isSubtle": False,  # <--- CHANGED: Makes text bright/readable
+                    "size": "Default"   
                 }
             ]
         }
     ]
 
-    # Add the table if we have facts
-    if fact_items:
-        card_body[1]["items"].append({
-            "type": "FactSet",
-            "facts": fact_items,
-            "separator": True,
-            "spacing": "Medium"
+    # 3. Dynamic Rows with Dividers (Replaces FactSet)
+    if facts:
+        # Create a container for the list
+        list_container = {
+            "type": "Container",
+            "padding": "None",
+            "items": []
+        }
+        
+        first_item = True
+        for k, v in facts.items():
+            # Create a 2-Column Row for each fact
+            row = {
+                "type": "ColumnSet",
+                "spacing": "Medium",      # Adds vertical space
+                "separator": not first_item, # Adds line (divider) to all except the first
+                "columns": [
+                    {
+                        "type": "Column",
+                        "width": "auto", # Key takes only needed space
+                        "items": [
+                            {
+                                "type": "TextBlock",
+                                "text": str(k),
+                                "weight": "Bolder",
+                                "wrap": True
+                            }
+                        ]
+                    },
+                    {
+                        "type": "Column",
+                        "width": "stretch", # Value takes remaining space
+                        "items": [
+                            {
+                                "type": "TextBlock",
+                                "text": str(v),
+                                "wrap": True,
+                                "horizontalAlignment": "Right" # Aligns value to the right
+                            }
+                        ]
+                    }
+                ]
+            }
+            list_container["items"].append(row)
+            first_item = False
+            
+        # Add the list container to the main card
+        card_body.append({
+            "type": "Container",
+            "padding": "Default", # Adds padding around the whole list
+            "style": "emphasis",  # Adds a slight background color to the data section
+            "items": [list_container]
         })
 
+    # 4. Final Payload
     payload = {
         "type": "message",
-        "attachments": [{
-            "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "version": "1.4",
-                "msteams": {"width": "Full"},
-                "body": card_body
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "contentUrl": None,
+                "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.2",
+                    "msteams": {"width": "Full"},
+                    "body": card_body
+                }
             }
-        }]
+        ]
     }
 
     try:
-        manager.session.post(TEAMS_WEBHOOK_URL, json=payload)
+        response = manager.session.post(TEAMS_WEBHOOK_URL, json=payload, timeout=10)
+        if response.status_code not in [200, 202]:
+            print(f"❌ Teams Hatası: {response.status_code}")
     except Exception as e:
-        print(f"Teams Error: {e}")
+        print(f"❌ Teams Bağlantı Hatası: {e}")
 
 def analizi_yap(xml_response, draft_name):
     manager.add_log("📊 Sonuçlar analiz ediliyor...")
@@ -614,17 +668,17 @@ def drafti_kopyala(target_date):
                 loc = yeni_satir.iloc[0]["From"]
                 
                 # SUCCESS NOTIFICATION
-                teams_bildirim_gonder(
-                    title="Kopyalama Başarılı",
-                    message="Yeni taslak oluşturuldu ve takip listesine eklendi.",
-                    status="info",
-                    facts={
-                        "Eski Taslak": str(target_date), # Or original name if you pass it
-                        "Yeni Taslak": new_draft_name,
-                        "Lokasyon": loc,
-                        "Tarih": yeni_tarih
-                    }
-                )
+                # teams_bildirim_gonder(
+                #     title="Kopyalama Başarılı",
+                #     message="Yeni taslak oluşturuldu ve takip listesine eklendi.",
+                #     status="info",
+                #     facts={
+                #         "Eski Taslak": str(target_date), # Or original name if you pass it
+                #         "Yeni Taslak": new_draft_name,
+                #         "Lokasyon": loc,
+                #         "Tarih": yeni_tarih
+                #     }
+                # )
 
                 return {"name": new_draft_name, "date": yeni_tarih, "loc": loc}
             
@@ -863,9 +917,6 @@ def address_request_handler(draft_url, target_date, res_draft):
     else:
         print("Could not find the update tag with the table ID.")
     
-
-
-
 def gorev():
     current_list = manager.watch_list
     
@@ -906,7 +957,6 @@ def start_scheduler():
 
 scheduler = start_scheduler()
 
-# --- UI TASARIMI ---
 # --- UI TASARIMI ---
 st.set_page_config(page_title="Kargo Paneli", layout="wide")
 
@@ -980,6 +1030,18 @@ with col1:
             
             # DURUM 1: Henüz hesaplar çekilmediyse "Getir" butonu göster
             if not manager.available_accounts:
+                with st.spinner("Hesaplar çekiliyor..."):
+                        if not manager.session.cookies: 
+                            login()
+                        
+                        fetch_success = fetch_accounts_backend()
+                        
+                        if fetch_success:
+                            st.success("Listelendi!")
+                            time.sleep(0.5)
+                            st.rerun()
+                        else:
+                            st.error("Çekilemedi.")
                 # FIX: Logic is now INSIDE the button check
                 if st.button("Hesapları Getir", key="fetch_acc_btn", use_container_width=True):
                     with st.spinner("Hesaplar çekiliyor..."):
