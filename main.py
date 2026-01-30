@@ -1382,7 +1382,31 @@ def main():
         if manager.scheduler_mode == "interval":
             st.caption(f"Aktif Dakika Sınır: **{manager.mins_threshold} Dakika**")
 
-    st.title("📑 Otomatik Kargo Botu")
+    #st.title("📑 Otomatik Kargo Botu")
+    title_text = "2D Workflow Bot"
+    st.markdown(f"""
+        <style>
+        /* 1. Ensure the tab list takes full width so we can push content to the right */
+        div[data-baseweb="tab-list"] {{
+            display: flex;
+            margin-top: 20px;
+            width: 100%;
+        }}
+        
+        /* 2. Create a pseudo-element after the last tab */
+        div[data-baseweb="tab-list"]::after {{
+            content: "{title_text}"; /* The text to display */
+            margin-left: auto;            /* Pushes this element to the far right */
+            align_self: center;           /* Vertically center it */
+            margin-right: 1rem;           /* Add some right padding */
+            
+            font-weight: bold;
+            font-size: 1.5rem;
+            padding: 0;
+            color: white;        /* Dynamic color */
+        }}
+        </style>
+    """, unsafe_allow_html=True)
     tab_selection, tab_dashboard, tab_logs = st.tabs([ "Taslak Seçimi", "Aktif Takip (Dashboard)", "Loglar"])
 
     with tab_dashboard:
@@ -1408,14 +1432,16 @@ def main():
                 st.rerun()
 
     with tab_selection:
-        st.subheader("📦 Mevcut Taslaklar")
+        
 
-        header_col, menu_col = st.columns([3, 0.75], gap="small")
+        header_col, title_col, menu_col = st.columns([1, 5, 1], gap="small")
 
         with header_col:
             if st.button("🔄 Taslakları Yenile"):
                 st.cache_data.clear()
                 st.rerun()
+        with title_col:
+            st.subheader("Taslaklar", text_alignment="center")
         with menu_col:
             # Seçili olanı göster
             current_name = manager.current_account_name
