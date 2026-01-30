@@ -19,7 +19,7 @@ class GlobalManager:
 
         self.mile_threshold = 300  # Default value
         self.mins_threshold = 30   # Default value
-
+        self.is_running = False
         # --- CRITICAL FIX: Session managed here, not in st.session_state ---
         self.session = requests.Session()
         self.session.headers.update({
@@ -65,9 +65,9 @@ try:
     USER_EMAIL = st.secrets["DB_EMAIL"]
     USER_PASS = st.secrets["DB_PASS"]
 except:
-    TEAMS_WEBHOOK_URL = "https://buyablenet.webhook.office.com/webhookb2/62fa801a-535d-47b9-9ba6-ab48158aa1f5@27f4366a-0806-4505-823a-bd8c2586edd2/IncomingWebhook/32269561153f42a6a56faaa2d9975026/06ad48a6-33e1-4892-876e-fd4feaeb9e3c/V2YVP1xOHKBB8If7Q9EAy6UwW1mYSi3zUjMypSm4AeCg01"
-    USER_EMAIL = "sales@buyable.net"
-    USER_PASS = "hasali2603"
+    TEAMS_WEBHOOK_URL = ""
+    USER_EMAIL = ""
+    USER_PASS = ""
 
 BASE_URL = "https://app.2dworkflow.com"
 LOGIN_URL = f"{BASE_URL}/login.jsf"
@@ -313,7 +313,7 @@ def html_tabloyu_parse_et(html_content):
         try:
             name_input = cells[2].find("input")
             draft_name = name_input['value'] if name_input else cells[2].get_text(strip=True)
-            
+            name_input_id = name_input["id"]
             open_link = row.find("a", title="Open Draft Shipment")
             if not open_link: open_link = cells[1].find("a") 
             row_action_id = open_link.get("id") if open_link else None
@@ -344,6 +344,7 @@ def html_tabloyu_parse_et(html_content):
                 "Created": created_date,
                 "Action ID": row_action_id,
                 "Copy ID": copy_action_id,
+                "Name Input ID": name_input_id
             })
             
         except Exception as e: 
@@ -684,14 +685,35 @@ def drafti_kopyala(target_date):
                 manager.add_log(f"📍 Adres düzeltiliyor: {new_location} -> {base_loc}", "warning")
                 address_request_handler(full_redirect_url, target_date, new_page_res)
             
-            time.sleep(1.5) # Sistemin oturması için
+            time.sleep(2) # Sistemin oturması için
             res_check = manager.session.get(DRAFT_PAGE_URL)
+            soup_list = BeautifulSoup(res_check.text, 'html.parser')
             df_check = html_tabloyu_parse_et(res_check.text)
             yeni_satir = df_check[df_check["Draft Name"] == new_draft_name]
 
             if not yeni_satir.empty:
                 yeni_tarih = yeni_satir.iloc[0]["Created"]
                 loc = yeni_satir.iloc[0]["From"]
+                new_input_id = yeni_satir.iloc[0]["Name Input ID"]
+                clean_base = re.sub(r'(\s*-\s*copy|\s*copy|\s*-\s*clone)+', '', new_draft_name, flags=re.IGNORECASE).strip()
+                # Eski tarihleri temizle
+                clean_base = re.sub(r'\s\d{2}[/.-]\d{2}\s\d{2}:\d{2}:\d{2}$', '', clean_base)
+                
+                # Yeni Tarih Ekle (Gün/Ay Saat:Dk:Sn)
+                unique_ts = datetime.now().strftime("%d/%m %H:%M:%S")
+                if len(clean_base) > 30: clean_base = clean_base[:30]
+                new_clean_name = f"{clean_base} {unique_ts}"
+                
+                # ViewState'i formdan al
+                vs_input = soup_list.find("input", {"name": "javax.faces.ViewState"})
+                current_vs = vs_input.get("value")
+                
+                # --- RENAME SEQUENCE ÇAĞIR ---
+                if rename_draft_sequence(new_input_id, new_clean_name, soup_list, current_vs):
+                    final_draft_name = new_clean_name
+                    manager.add_log(f"✏️ İsim düzeltildi: {new_clean_name}")
+                else:
+                    final_draft_name = new_draft_name
                 
                 # SUCCESS NOTIFICATION
                 # teams_bildirim_gonder(
@@ -705,9 +727,17 @@ def drafti_kopyala(target_date):
                 #         "Tarih": yeni_tarih
                 #     }
                 # )
+                time.sleep(2) # Sistemin oturması için
+                res_final_check = manager.session.get(DRAFT_PAGE_URL)
+                df_check = html_tabloyu_parse_et(res_final_check.text)
+                yeni_satir = df_check[df_check["Draft Name"] == final_draft_name]
 
-                return {"name": new_draft_name, "date": yeni_tarih, "loc": loc}
-            
+                if not yeni_satir.empty:
+                    yeni_tarih = yeni_satir.iloc[0]["Created"]
+                    loc = yeni_satir.iloc[0]["From"]
+                return {"name": final_draft_name, "date": yeni_tarih, "loc": loc}
+            else:
+                manager.add_log("⚠️ Kopyalanan satır listede bulunamadı (Rename atlandı).", "warning")
             return None
             
         except Exception as e: 
@@ -946,51 +976,95 @@ def address_request_handler(draft_url, target_date, res_draft):
     else:
         print("Could not find the update tag with the table ID.")
     
-def rename_draft_backend(session, input_id, new_name, viewstate):
+def rename_draft_sequence(target_input_id, new_name, soup_page, current_vs):
     """
-    Renames the draft using the targeted 'change' event (Request #2).
+    Executes the 2-step rename sequence:
+    1. Full Table Update (Request 1)
+    2. Specific Change Event (Request 2)
     """
+    print(f"🔄 Renaming sequence started for: {new_name}")
+
+    # --- STEP 1: PREPARE PAYLOAD FOR REQUEST #1 (FULL TABLE) ---
+    form = soup_page.find("form", id="mainForm")
+    if not form: return False
+
+    # Scrape ALL inputs to mimic the browser's full table submission
+    payload_req1 = {}
+    for tag in form.find_all(["input", "select", "textarea"]):
+        name = tag.get("name")
+        value = tag.get("value", "")
+        if not name: continue
+        if tag.get("type") in ["checkbox", "radio"] and not tag.has_attr("checked"):
+            continue
+        payload_req1[name] = value
+
+    # Overwrite the specific target input with the NEW name
+    payload_req1[target_input_id] = new_name
+    
+    # Add JSF Table Parameters (From your Request 1)
+    payload_req1.update({
+        "javax.faces.partial.ajax": "true",
+        "javax.faces.source": "mainForm:drafts", # Table ID
+        "javax.faces.partial.execute": "mainForm:drafts",
+        "javax.faces.partial.render": "mainForm:drafts",
+        "mainForm:drafts": "mainForm:drafts",
+        "mainForm:drafts_encodeFeature": "true",
+        "javax.faces.ViewState": current_vs
+    })
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Faces-Request": "partial/ajax",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": DRAFT_PAGE_URL
+    }
+
     try:
-        # Request #2 Payload Structure
-        payload = {
+        # --- SEND REQUEST #1 ---
+        res1 = manager.session.post(DRAFT_PAGE_URL, data=payload_req1, headers=headers)
+        
+        if res1.status_code != 200:
+            print(f"❌ Request 1 Failed: {res1.status_code}")
+            return False
+
+        # IMPORTANT: Capture the NEW ViewState from Request 1 to use in Request 2
+        # JSF updates the state after every AJAX request.
+        match_vs = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res1.text)
+        next_viewstate = match_vs.group(1) if match_vs else current_vs
+        
+        # --- STEP 2: PREPARE PAYLOAD FOR REQUEST #2 (CHANGE EVENT) ---
+        payload_req2 = {
             "javax.faces.partial.ajax": "true",
-            "javax.faces.source": input_id,       # e.g. mainForm:drafts:0:j_idt275
-            "javax.faces.partial.execute": input_id, # Only process this field
-            "javax.faces.partial.render": "@none",   # We don't need a UI update response
-            "javax.faces.behavior.event": "change",  # Crucial: Triggers the change listener
-            "javax.faces.partial.event": "change",   # Often required alongside behavior.event
-            
-            # The actual new value: Key MUST be the input_id
-            input_id: new_name,  
-            
+            "javax.faces.source": target_input_id,
+            "javax.faces.partial.execute": target_input_id,
+            "javax.faces.behavior.event": "change",
+            "javax.faces.partial.event": "change",
+            "javax.faces.partial.render": "@none", # Assuming we don't need re-render
+            target_input_id: new_name, # The Key must be the Input ID
             "mainForm": "mainForm",
-            "javax.faces.ViewState": viewstate
+            "javax.faces.ViewState": next_viewstate # Use the FRESH ViewState
         }
+
+        # --- SEND REQUEST #2 ---
+        res2 = manager.session.post(DRAFT_PAGE_URL, data=payload_req2, headers=headers)
         
-        # Headers from your Request #2
-        headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
-            "Accept": "application/xml, text/xml, */*; q=0.01",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "Faces-Request": "partial/ajax",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": DRAFT_PAGE_URL
-        }
-        
-        res = session.post(DRAFT_PAGE_URL, data=payload, headers=headers)
-        
-        if res.status_code == 200:
-            print(f"Draft renamed to: {new_name}")
+        if res2.status_code == 200:
+            print(f"✅ Rename Sequence Complete: {new_name}")
             return True
         else:
-            print(f"Rename failed: {res.status_code}")
+            print(f"❌ Request 2 Failed: {res2.status_code}")
             return False
-            
+
     except Exception as e:
-        print(f"Rename error: {e}")
+        print(f"❌ Rename Sequence Error: {e}")
         return False
 
 def gorev():
+    if not manager.is_running:
+        # Optional: Print to console for debug, but don't spam UI logs
+        print("Bot duraklatıldı. Görev atlanıyor.")
+        return
     current_list = manager.watch_list
     if not current_list: return
 
@@ -1196,7 +1270,7 @@ with col1:
                 "Action ID": None,
                 "Copy ID": None
             },
-            disabled=["Draft Name", "From", "Created"],
+            disabled=["Draft Name", "From", "Created", "Name Input ID"],
             hide_index=True,
             width='stretch',
             key="draft_selector"
@@ -1231,15 +1305,6 @@ with col1:
             
                 if eklenen_sayisi > 0:
                     manager.update_watch_list(current)
-                    
-                    # --- KRİTİK EKLEME: HEMEN BAŞLAT ---
-                    # Scheduler'a "gorev" fonksiyonunu ŞU AN ('date' modunda) çalıştırmasını söylüyoruz.
-                    # Periyodik döngü bozulmaz, sadece araya bir işlem sıkıştırır.
-                    try:
-                        scheduler.add_job(gorev, 'date', run_date=datetime.now())
-                        st.toast("🚀 İşlem arka planda hemen başlatıldı!")
-                    except Exception as e:
-                        st.warning(f"Otomatik başlatma tetiklenemedi (Zaten çalışıyor olabilir): {e}")
 
                     st.success(f"{eklenen_sayisi} yeni taslak eklendi ve işlem sıraya alındı!")
                     time.sleep(1) # Kullanıcı mesajı okusun
@@ -1267,20 +1332,57 @@ with col2:
 
 st.divider()
 
-    # 1. BÖLÜM: TAKİP LİSTESİ YÖNETİMİ
-st.subheader("📋 Aktif Takip Listesi")
+# 1. BÖLÜM: TAKİP LİSTESİ YÖNETİMİ
+# We create a layout: [Header Text] --- [Status Text] --- [Start Btn] [Stop Btn]
+list_header_col, status_col, controls_col = st.columns([4, 2, 2], gap="small", vertical_alignment="center")
+
+with list_header_col:
+    st.subheader("📋 Aktif Takip Listesi")
+
+with status_col:
+    # Status Indicator aligned to the right of the text
+    if manager.is_running:
+        st.markdown("**:green[● ÇALIŞIYOR]**", help=f"Bot aktif. {manager.mins_threshold} dakikada bir kontrol ediliyor.")
+    else:
+        st.markdown("**:red[● DURDURULDU]**", help="Bot şu an işlem yapmıyor.")
+
+with controls_col:
+    # Nested columns for tight button spacing
+    start_btn_col, stop_btn_col = st.columns(2)
+    
+    with start_btn_col:
+        # Start Button
+        if st.button("BAŞLAT", help="Botu Başlat", type="secondary", use_container_width=True, disabled=manager.is_running, ):
+            manager.is_running = True
+            manager.add_log("▶️ Bot başlatıldı.", "success")
+            try:
+                # Trigger immediate run
+                scheduler.add_job(gorev, 'date', run_date=datetime.now())
+                st.toast("Bot başlatıldı, ilk kontrol yapılıyor...")
+            except: pass
+            st.rerun()
+
+    with stop_btn_col:
+        # Stop Button
+        if st.button("DURDUR", help="Botu Durdur", type="secondary", use_container_width=True, disabled=not manager.is_running):
+            manager.is_running = False
+            manager.add_log("⏹️ Bot durduruldu.", "warning")
+            st.toast("Bot durduruldu.")
+            st.rerun()
+
+# --- DATAFRAME EDITOR ---
 watch_df = manager.get_watch_list_df()
 
 if not watch_df.empty:
     edited_watch_df = st.data_editor(
         watch_df,
         column_config={
-            "account_name": "Hesap",  # <--- Show the Account Name
+            "account_name": "Hesap",
             "name": "Taslak Adı",
             "date": "Created",
             "loc": "From",
-            "max_mile": st.column_config.NumberColumn("Limit", step=50),
-            "targets": st.column_config.TextColumn("Hedefler")
+            "max_mile": st.column_config.NumberColumn("Limit", step=50, help="Bu taslak için özel mil sınırı"),
+            "targets": st.column_config.TextColumn("Hedefler", help="Örn: AVP1, TEB3")
         },
         disabled=["account_name", "name", "date", "loc"],
         num_rows="dynamic",
@@ -1288,13 +1390,11 @@ if not watch_df.empty:
         width='stretch'
     )
     
-    # Data editor'den gelen güncel veriyi manager'a kaydet
-    # Sadece butonla kaydetmek daha güvenli (her harfte tetiklenmemesi için)
-    if st.button("💾 Listeyi Güncelle"):
+    if st.button("💾 Değişiklikleri Kaydet", use_container_width=True):
         yeni_liste_dict = edited_watch_df.to_dict("records")
         manager.update_watch_list(yeni_liste_dict)
         st.success("Takip listesi güncellendi!")
         st.rerun()
 else:
-    st.info("Takip listesi şu an boş. Aşağıdan taslak seçip ekleyin.")
+    st.info("Takip listesi şu an boş. Yukarıdan taslak seçip ekleyin.")
 
