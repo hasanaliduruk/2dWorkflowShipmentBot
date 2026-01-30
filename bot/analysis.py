@@ -76,7 +76,9 @@ def analizi_yap(mgr, xml_response, draft_item):
                         bulunan_firsatlar[current_option] = f"{mil} Mil ➡️ {dest}"
                         found_new["found_new"].append({dest: mil})
 
-                except: pass
+                except Exception as e: 
+                    mgr.add_log(f"Analiz hatasi: {e}")
+                    pass
 
     # --- SEND SINGLE NOTIFICATION ---
     if bulunan_firsatlar:

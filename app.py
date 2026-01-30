@@ -133,6 +133,8 @@ def main():
                 del st.session_state.my_manager
             st.rerun()
         st.divider()
+        if st.button("🔄 Yenile (UI)", help="Son durumu görmek için arayüzü yeniler"):
+            st.rerun()
         # ... your sidebar settings ...
 
     # --- SIDEBAR SETTINGS ---

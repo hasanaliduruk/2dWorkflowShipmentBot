@@ -95,11 +95,21 @@ def poll_results_until_complete(session, base_payload, referer_url):
 
     for i in range(max_retries):
         try:
-            poll_params = jsf_ajax_payload("mainForm:planingStatusDialogPoll", render="mainForm:shipmentPlansPanel mainForm:a2dw_boxContentPanel mainForm:progressBarPlaning")
+            poll_params = {
+                "javax.faces.partial.ajax": "true",
+                "javax.faces.source": "mainForm:planingStatusDialogPoll",
+                "javax.faces.partial.execute": "@all",
+                "javax.faces.partial.render": "mainForm:shipmentPlansPanel mainForm:a2dw_boxContentPanel mainForm:progressBarPlaning",
+                "mainForm:planingStatusDialogPoll": "mainForm:planingStatusDialogPoll",
+                "mainForm": "mainForm"
+            }
             res = session.post(PLAN_URL, data={**base_payload, **poll_params}, headers={"Referer": referer_url})
             
-            vs = extract_viewstate(res.text)
-            if vs: base_payload["javax.faces.ViewState"] = vs
+            if "javax.faces.ViewState" in res.text:
+                try:
+                    match = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res.text)
+                    if match: base_payload["javax.faces.ViewState"] = match.group(1)
+                except: pass
 
             #if "mainForm:plans" in res.text or "Amazon Optimized Splits" in res.text:
                 #return res.text
@@ -137,7 +147,14 @@ def drafti_kopyala(mgr, target_date):
         
     # 2. Copy Butonuna Bas
     form_data = form_verilerini_topla(res.text)
-    copy_payload = jsf_ajax_payload(copy_id, "clone_draft_confirm")
+    copy_payload = {
+        "javax.faces.partial.ajax": "true",
+        "javax.faces.source": copy_id,
+        "javax.faces.partial.execute": "@all",
+        "javax.faces.partial.render": "clone_draft_confirm",
+        copy_id: copy_id,
+        "mainForm": "mainForm"
+    }
     res_confirm = mgr.session.post(DRAFT_PAGE_URL, data={**form_data, **copy_payload})
     
     # 3. Confirm (Yes) Butonuna Bas
@@ -155,7 +172,15 @@ def drafti_kopyala(mgr, target_date):
         if match_vs: current_vs = match_vs.group(1)
     except: pass
 
-    confirm_payload = jsf_ajax_payload(confirm_btn_id, viewstate=current_vs)
+    confirm_payload = {
+        "javax.faces.partial.ajax": "true",
+        "javax.faces.source": confirm_btn_id,
+        "javax.faces.partial.execute": "@all",
+        confirm_btn_id: confirm_btn_id,
+        "mainForm": "mainForm",
+        "javax.faces.ViewState": current_vs
+    }
+    
     res_final = mgr.session.post(DRAFT_PAGE_URL, data=confirm_payload)
 
     # 4. Redirect ve Yeni İsim Alma
@@ -261,7 +286,13 @@ def drafti_planla_backend(mgr, draft_item):
         current_action_id = target_row.iloc[0]["Action ID"]
 
         form_data = form_verilerini_topla(main_res.text)
-        action_payload = jsf_ajax_payload(current_action_id)
+        action_payload = {
+            "javax.faces.partial.ajax": "true",
+            "javax.faces.source": current_action_id,
+            "javax.faces.partial.execute": "@all",
+            current_action_id: current_action_id, 
+            "mainForm": "mainForm"
+        }
         res_open = mgr.session.post(DRAFT_PAGE_URL, data={**form_data, **action_payload})
         
         # Redirect Check
@@ -282,7 +313,14 @@ def drafti_planla_backend(mgr, draft_item):
         mgr.add_log("🚀 Planlama başlatılıyor...")
         detay_res = mgr.session.get(redirect_url)
         detay_form_data = form_verilerini_topla(detay_res.text)
-        create_plan_params = jsf_ajax_payload("mainForm:create_plan", render="mainForm")
+        create_plan_params = {
+            "javax.faces.partial.ajax": "true",
+            "javax.faces.source": "mainForm:create_plan",
+            "javax.faces.partial.execute": "@all",
+            "javax.faces.partial.render": "mainForm",
+            "mainForm:create_plan": "mainForm:create_plan",
+            "mainForm": "mainForm"
+        }
         res_plan = mgr.session.post(PLAN_URL, data={**detay_form_data, **create_plan_params}, headers={"Referer": redirect_url})
         
         if "ui-messages-error" in res_plan.text:
@@ -290,8 +328,11 @@ def drafti_planla_backend(mgr, draft_item):
              return None
 
         # 3. Polling
-        vs = extract_viewstate(res_plan.text)
-        if vs: detay_form_data["javax.faces.ViewState"] = vs
+        if "javax.faces.ViewState" in res_plan.text:
+            try:
+                 match = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res_plan.text)
+                 if match: detay_form_data["javax.faces.ViewState"] = match.group(1)
+            except: pass
 
         final_xml = final_xml = poll_results_until_complete(
             mgr.session, 
@@ -301,9 +342,9 @@ def drafti_planla_backend(mgr, draft_item):
         
         if final_xml:
             sonuc = analizi_yap(mgr, final_xml, draft_item)
-            if isinstance(sonuc, dict) and 'found_target' in sonuc:
+            if sonuc == "FOUND_TARGET":
                 mgr.add_log(f"🏁 {draft_name}: Hedef depo bulunduğu için işlem sonlandırıldı.", "success")
-                return {"STOP": sonuc['found_target']} # This removes it from the watchlist
+                return "STOP" # This removes it from the watchlist
             
             elif isinstance(sonuc, dict) and 'found_new' in sonuc:
                 found_wh = sonuc['found_new']
