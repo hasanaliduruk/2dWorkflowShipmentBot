@@ -1596,6 +1596,13 @@ def main():
                 manager.add_log("⏹️ Bot durduruldu.", "warning")
                 st.toast("Bot durduruldu.")
                 st.rerun()
+    if manager.is_running:
+        job = manager.scheduler.get_job('user_task')
+        if job and job.next_run_time:
+            next_run = job.next_run_time.strftime("%H:%M:%S")
+            st.info(f"⏳ **Sonraki Planlanmış Çalışma:** {next_run}")
+        else:
+            st.warning("⚠️ Bot çalışıyor ama zamanlayıcı bulunamadı.")
 
     # --- DATAFRAME EDITOR ---
     watch_df = manager.get_watch_list_df()
