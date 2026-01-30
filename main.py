@@ -22,7 +22,10 @@ class GlobalManager:
         self.logs = deque(maxlen=50)
         self.history = deque(maxlen=50)
         self.mile_threshold = 300
+
+        # Scheduling settings
         self.mins_threshold = 30
+        self.scheduler_mode = "interval"
         self.is_running = False 
         
         # 3. Isolated Session
@@ -45,18 +48,38 @@ class GlobalManager:
         self.logs.appendleft(f"{timestamp} {icon} {message}")
 
     def start_bot_process(self):
-        """Starts the job for this specific user"""
+        """Starts or Reschedules the job based on the selected mode"""
+        
+        # 1. Determine Trigger Type
+        if self.scheduler_mode == "half_hourly":
+            # Run at :00 and :30
+            trigger_args = {'trigger': 'cron', 'minute': '0,30'}
+            log_msg = "Mod: Saat Başı ve Buçuk (xx:00, xx:30)"
+            
+        elif self.scheduler_mode == "quarterly":
+            # Run at :00, :15, :30, :45
+            trigger_args = {'trigger': 'cron', 'minute': '0,15,30,45'}
+            log_msg = "Mod: Çeyrek Saatler (xx:00, xx:15...)"
+            
+        else:
+            # Default: Interval
+            trigger_args = {'trigger': 'interval', 'minutes': self.mins_threshold}
+            log_msg = f"Mod: Her {self.mins_threshold} dakikada bir"
+
+        # 2. Add or Reschedule
         if not self.scheduler.get_job('user_task'):
             self.scheduler.add_job(
                 gorev, 
-                'interval', 
-                minutes=self.mins_threshold, 
                 id='user_task', 
-                args=[self], # Pass SELF (this specific manager)
-                max_instances=1
+                args=[self], 
+                max_instances=1,
+                **trigger_args
             )
         else:
-            self.scheduler.reschedule_job('user_task', trigger='interval', minutes=self.mins_threshold)
+            self.scheduler.reschedule_job('user_task', **trigger_args)
+            
+        # Optional: Log the change internally if needed (mostly for debugging)
+        print(f"Scheduler updated: {log_msg}")
 
     def stop_bot_process(self):
         if self.scheduler.get_job('user_task'):
@@ -120,16 +143,11 @@ def get_global_bot_store():
     return {}
 # manager = get_manager()
 
-
-# --- KONFIGURASYON ---
+# ----- CONFIG -----
 try:
     TEAMS_WEBHOOK_URL = st.secrets["TEAMS_WEBHOOK"]
-    USER_EMAIL = st.secrets["DB_EMAIL"]
-    USER_PASS = st.secrets["DB_PASS"]
 except:
     TEAMS_WEBHOOK_URL = ""
-    USER_EMAIL = ""
-    USER_PASS = ""
 
 BASE_URL = "https://app.2dworkflow.com"
 LOGIN_URL = f"{BASE_URL}/login.jsf"
@@ -1317,8 +1335,25 @@ def main():
 
     # --- SIDEBAR SETTINGS ---
     with st.sidebar:
-        st.header("⚙️ Bot Ayarları")
+        st.header("⚙️ Ayarlar")
         
+        # --- SCHEDULER SETTINGS ---
+        mode_label = st.radio(
+            "Zamanlama Modu", 
+            ["Dakika Bazlı (Interval)", "Saat Başı ve Buçuk (00, 30)", "Çeyrek Saatler (00, 15, 30, 45)"],
+            captions=["Belirlediğiniz dakika aralığında çalışır.", "Her saat başı ve buçukta (örn 14:00, 14:30) çalışır.", "Her 15 dakikada bir (örn 14:15, 14:45) çalışır."]
+        )
+        
+        # Map label to internal value
+        new_mode = "interval"
+        if "Saat Başı" in mode_label: new_mode = "half_hourly"
+        elif "Çeyrek" in mode_label: new_mode = "quarterly"
+        
+        if new_mode != manager.scheduler_mode:
+            manager.scheduler_mode = new_mode
+            if manager.is_running: manager.start_bot_process() # Restart with new mode
+            st.toast("✅ Zamanlayıcı güncellendi")
+
         # Mil Ayarı
         mile_limit = st.number_input(
             "Fırsat Mil Sınırı (Mil)", 
@@ -1335,26 +1370,17 @@ def main():
             st.toast(f"✅ Sınır güncellendi: {mile_limit} Mil")
 
         # Min Ayarı
-        min_limit = st.number_input(
-            "Tekrar deneme dakikası", 
-            min_value=1, 
-            max_value=500, 
-            value=manager.mins_threshold, 
-            step=5,
-            help="Botun kaç dakikada bir kontrol edeceğini belirler."
-        )
-        
-        # Update Manager and Reschedule Job if changed
-        if min_limit != manager.mins_threshold:
-            manager.mins_threshold = min_limit
-            # Reschedule immediately if running
-            if manager.is_running:
-                 manager.start_bot_process()
-            st.toast("✅ Zamanlayıcı güncellendi")
+        if manager.scheduler_mode == "interval":
+            min_limit = st.number_input("Tekrar deneme dakikası", min_value=1, max_value=500, value=manager.mins_threshold, step=5)
+            if min_limit != manager.mins_threshold:
+                manager.mins_threshold = min_limit
+                if manager.is_running: manager.start_bot_process()
+                st.toast("✅ Zamanlayıcı güncellendi")
             
         st.divider()
         st.caption(f"Aktif Mil Sınır: **{manager.mile_threshold} Mil**")
-        st.caption(f"Aktif Dakika Sınır: **{manager.mins_threshold} Dakika**")
+        if manager.scheduler_mode == "interval":
+            st.caption(f"Aktif Dakika Sınır: **{manager.mins_threshold} Dakika**")
 
     st.title("📑 Otomatik Kargo Botu")
     tab_selection, tab_dashboard, tab_logs = st.tabs([ "Taslak Seçimi", "Aktif Takip (Dashboard)", "Loglar"])
@@ -1554,11 +1580,12 @@ def main():
                 manager.is_running = True
                 manager.add_log("▶️ Bot başlatıldı.", "success")
                 manager.start_bot_process()
-                try:
-                    # Trigger immediate run
-                    manager.scheduler.add_job(gorev, 'date', run_date=datetime.now(), args=[manager])
-                    st.toast("Bot başlatıldı, ilk kontrol yapılıyor...")
-                except: pass
+                if manager.scheduler_mode == "interval":
+                    try:
+                        # Trigger immediate run
+                        manager.scheduler.add_job(gorev, 'date', run_date=datetime.now(), args=[manager])
+                        st.toast("Bot başlatıldı, ilk kontrol yapılıyor...")
+                    except: pass
                 st.rerun()
 
         with stop_btn_col:
