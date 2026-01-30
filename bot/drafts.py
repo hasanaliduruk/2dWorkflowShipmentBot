@@ -98,7 +98,7 @@ def poll_results_until_complete(session, base_payload, referer_url):
             poll_params = jsf_ajax_payload("mainForm:planingStatusDialogPoll", render="mainForm:shipmentPlansPanel mainForm:a2dw_boxContentPanel mainForm:progressBarPlaning")
             res = session.post(PLAN_URL, data={**base_payload, **poll_params}, headers={"Referer": referer_url})
             
-            vs = extract_viewstate(res.text, vs)
+            vs = extract_viewstate(res.text)
             if vs: base_payload["javax.faces.ViewState"] = vs
 
             #if "mainForm:plans" in res.text or "Amazon Optimized Splits" in res.text:
@@ -290,7 +290,7 @@ def drafti_planla_backend(mgr, draft_item):
              return None
 
         # 3. Polling
-        vs = extract_viewstate(res_plan.text, vs)
+        vs = extract_viewstate(res_plan.text)
         if vs: detay_form_data["javax.faces.ViewState"] = vs
 
         final_xml = final_xml = poll_results_until_complete(
@@ -386,7 +386,7 @@ def address_request_handler(mgr, draft_url, target_date, res_draft):
     data_rk = ""
     select_btn_id = ""
     xml_data = mgr.session.post(PLAN_URL, data=payload_open)
-    vs = extract_viewstate(xml_data.text, vs)
+    vs = extract_viewstate(xml_data.text)
     if vs: current_viewstate = vs
 
     outer_soup = BeautifulSoup(xml_data.text, 'xml')
@@ -433,7 +433,7 @@ def address_request_handler(mgr, draft_url, target_date, res_draft):
                 }
                 res_select = mgr.session.post(PLAN_URL, data=payload_select)
                 if res_select.status_code == 200:
-                    vs_2 = extract_viewstate(res_select.text, vs_2)
+                    vs_2 = extract_viewstate(res_select.text)
                     if vs_2: current_viewstate = vs_2
 
                     modal_form_data = form_verilerini_topla(inner_html_content)
@@ -513,7 +513,7 @@ def rename_draft_sequence(mgr, target_input_id, new_name, soup_page, current_vs)
 
         # IMPORTANT: Capture the NEW ViewState from Request 1 to use in Request 2
         # JSF updates the state after every AJAX request.
-        vs = extract_viewstate(res1.text, vs)
+        vs = extract_viewstate(res1.text)
         next_viewstate = vs if vs else current_vs
         
         # --- STEP 2: PREPARE PAYLOAD FOR REQUEST #2 (CHANGE EVENT) ---
