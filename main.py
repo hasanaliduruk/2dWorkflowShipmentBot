@@ -70,22 +70,12 @@ class GlobalManager:
             
             if key in self.watch_list:
                 existing = self.watch_list[key]
-                # 1. Logic Memory (Accumulates everything)
                 final_item['found_warehouses'] = existing.get('found_warehouses', [])
-                # 2. Display Memory (Shows only relevant info for this draft)
-                final_item['display_warehouses'] = existing.get('display_warehouses', [])
-                
-                # Account Info
-                if 'account_id' not in final_item:
-                    final_item['account_id'] = existing.get('account_id')
-                if 'account_name' not in final_item:
-                    final_item['account_name'] = existing.get('account_name')
+                final_item['account_id'] = existing.get('account_id')
+                final_item['account_name'] = existing.get('account_name')
             else:
-                # Initialize both lists if new
                 if 'found_warehouses' not in final_item:
                     final_item['found_warehouses'] = []
-                if 'display_warehouses' not in final_item:
-                    final_item['display_warehouses'] = []
 
             new_watch_list[key] = final_item
         
@@ -99,12 +89,21 @@ class GlobalManager:
             return pd.DataFrame()
         return pd.DataFrame(list(self.watch_list.values()))
     
-    def add_history_entry(self, draft_name, found_list):
-        """Records a success before the draft is deleted/replaced."""
+    def add_history_entry(self, draft_name, found_data):
+        """
+        Records a success. Handles list of dicts: [{'AVP1': 150}, {'MEM1': 200}]
+        """
         timestamp = datetime.now().strftime("%H:%M")
+        formatted_list = []
+        for item in found_data:
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    formatted_list.append(f"{k}: {v} Mil")
+            elif isinstance(item, str):
+                formatted_list.append(item)
         entry = {
             "name": draft_name,
-            "found": ", ".join(found_list),
+            "found": ", ".join(formatted_list),
             "time": timestamp
         }
         self.history.appendleft(entry)
@@ -601,6 +600,7 @@ def analizi_yap(mgr, xml_response, draft_item):
                 try:
                     mil = int(dist_text.replace("mi", "").replace(",", "").strip())
                     dest = cells[2].get_text(strip=True).upper()
+                    dest = dest.split(":")[0]
                     
                     if "Amazon Optimized" in current_option: continue
                     
@@ -625,7 +625,7 @@ def analizi_yap(mgr, xml_response, draft_item):
                         mgr.add_log(f"✅ MESAFE UYGUN: {mil} Mil ({dest})", "success")
                         firsat_sayisi += 1
                         bulunan_firsatlar[current_option] = f"{mil} Mil ➡️ {dest}"
-                        found_new["found_new"].append(dest)
+                        found_new["found_new"].append({dest: mil})
 
                 except: pass
 
@@ -1052,7 +1052,7 @@ def address_request_handler(mgr, draft_url, target_date, res_draft):
 
     else:
         print("Could not find the update tag with the table ID.")
-    
+
 def rename_draft_sequence(mgr, target_input_id, new_name, soup_page, current_vs):
     """
     Executes the 2-step rename sequence:
@@ -1177,15 +1177,27 @@ def gorev(mgr):
             # 1. Update Memory
             
             new_found_list = sonuc.pop('newly_found_warehouse', [])
-            if isinstance(new_found_list, str): 
-                new_found_list = [new_found_list]
-
             known_wh = item.get('found_warehouses', []).copy()
 
+            added_new_unique = False
+            
+            # Loop through the list of dicts (e.g. [{'AVP1': 100}, {'MEM1': 200}])
             if new_found_list:
-                for wh in new_found_list:
-                    if wh not in known_wh:
-                        known_wh.append(wh)
+                for data_item in new_found_list:
+                    # Extract Key (Warehouse Name)
+                    if isinstance(data_item, dict):
+                        wh_name = next(iter(data_item)) 
+                    else:
+                        wh_name = str(data_item)
+                        
+                    # Check duplication
+                    if wh_name not in known_wh:
+                        known_wh.append(wh_name)
+                        added_new_unique = True
+            
+            # 2. Update HISTORY (Display - Full dicts)
+            # Only add to history table if we found something new
+            if added_new_unique:
                 mgr.add_history_entry(d_name, new_found_list)
 
             # 2. Transfer Metadata
@@ -1215,7 +1227,25 @@ def gorev(mgr):
 
 def main():
     st.set_page_config(page_title="2DWorkflow Bot", layout="wide")
-
+    st.markdown("""
+        <style>
+               /* Reduce top padding */
+               .block-container {
+                    padding-top: 1rem;
+                    padding-bottom: 1rem;
+                    padding-left: 2rem;
+                    padding-right: 2rem;
+                }
+                /* Compact Data Editor/Dataframe cells */
+                div[data-testid="stDataEditor"] div[data-testid="stDataFrame"] table {
+                    font-size: 0.85rem !important;
+                }
+                /* Reduce vertical gap between elements */
+                div[data-testid="stVerticalBlock"] > div {
+                    gap: 0.5rem;
+                }
+        </style>
+        """, unsafe_allow_html=True)
     BOT_STORE = get_global_bot_store()
     
     # 1. Check Session State
@@ -1327,12 +1357,31 @@ def main():
         st.caption(f"Aktif Dakika Sınır: **{manager.mins_threshold} Dakika**")
 
     st.title("📑 Otomatik Kargo Botu")
-    st.divider()
+    tab_selection, tab_dashboard, tab_logs = st.tabs([ "Taslak Seçimi", "Aktif Takip (Dashboard)", "Loglar"])
 
-    # 2. BÖLÜM: TASLAK SEÇİMİ (MEVCUT LİSTE)
-    col1, col2 = st.columns([2, 1])
+    with tab_dashboard:
+        if manager.history:
+            st.success(f"🎉 Toplam {len(manager.history)} işlemde fırsat yakalandı!")
+            
+            # Convert deque to DataFrame
+            history_df = pd.DataFrame(manager.history)
+            
+            st.dataframe(
+                history_df,
+                column_config={
+                    "name": st.column_config.TextColumn("📦 İşlenen Taslak", width="medium"),
+                    "found": st.column_config.TextColumn("🎯 Bulunanlar", width="large"),
+                    "time": st.column_config.TextColumn("🕒 Zaman", width="small")
+                },
+                hide_index=True,
+                width="stretch"
+            )
+            
+            if st.button("Geçmişi Temizle"):
+                manager.history.clear()
+                st.rerun()
 
-    with col1:
+    with tab_selection:
         st.subheader("📦 Mevcut Taslaklar")
 
         header_col, menu_col = st.columns([3, 0.75], gap="small")
@@ -1468,13 +1517,7 @@ def main():
                     else:
                         st.warning("Seçilenler zaten listede.")
 
-    # 3. BÖLÜM: CANLI LOGLAR (SAĞ PANEL)
-    with col2:
-        st.subheader("📡 Canlı Loglar")
-        
-        # Logları otomatik yenilemek için basit bir döngü yerine buton veya fragment
-        # Streamlit 1.37+ kullanıyorsan st.fragment süper olur, yoksa manuel yenileme butonu
-        
+    with tab_logs:
         if st.button("Logları Yenile"):
             pass # Sadece rerun tetikler
         
@@ -1486,29 +1529,7 @@ def main():
         # Otomatik yenileme notu
         st.caption("Loglar arka planda birikir. Sayfayı yenileyerek veya butona basarak görebilirsiniz.")
 
-    st.divider()
-
-    if manager.history:
-        st.success(f"🎉 Toplam {len(manager.history)} işlemde fırsat yakalandı!")
-        
-        # Convert deque to DataFrame
-        history_df = pd.DataFrame(manager.history)
-        
-        st.dataframe(
-            history_df,
-            column_config={
-                "name": st.column_config.TextColumn("📦 İşlenen Taslak", width="medium"),
-                "found": st.column_config.TextColumn("🎯 Bulunanlar", width="large"),
-                "time": st.column_config.TextColumn("🕒 Zaman", width="small")
-            },
-            hide_index=True,
-            width="stretch"
-        )
-        
-        if st.button("Geçmişi Temizle"):
-            manager.history.clear()
-            st.rerun()
-
+    
     # 1. BÖLÜM: TAKİP LİSTESİ YÖNETİMİ
     # We create a layout: [Header Text] --- [Status Text] --- [Start Btn] [Stop Btn]
     list_header_col, status_col, controls_col = st.columns([4, 2, 2], gap="small", vertical_alignment="center")
