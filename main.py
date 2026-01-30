@@ -17,8 +17,10 @@ class GlobalManager:
         self.password = password
         
         # 2. User-Specific Data
-        self.watch_list = []
+        # Structure: { "01.30.2026 14:00": { 'name':..., 'loc':... } }
+        self.watch_list = {}
         self.logs = deque(maxlen=50)
+        self.history = deque(maxlen=50)
         self.mile_threshold = 300
         self.mins_threshold = 30
         self.is_running = False 
@@ -60,13 +62,52 @@ class GlobalManager:
         if self.scheduler.get_job('user_task'):
             self.scheduler.remove_job('user_task')
             
-    # Helper to update watch list
-    def update_watch_list(self, new_list):
-        self.watch_list = new_list
+    def update_watch_list_from_df(self, df_records):
+        new_watch_list = {}
+        for item in df_records:
+            key = item['date']
+            final_item = item.copy()
+            
+            if key in self.watch_list:
+                existing = self.watch_list[key]
+                # 1. Logic Memory (Accumulates everything)
+                final_item['found_warehouses'] = existing.get('found_warehouses', [])
+                # 2. Display Memory (Shows only relevant info for this draft)
+                final_item['display_warehouses'] = existing.get('display_warehouses', [])
+                
+                # Account Info
+                if 'account_id' not in final_item:
+                    final_item['account_id'] = existing.get('account_id')
+                if 'account_name' not in final_item:
+                    final_item['account_name'] = existing.get('account_name')
+            else:
+                # Initialize both lists if new
+                if 'found_warehouses' not in final_item:
+                    final_item['found_warehouses'] = []
+                if 'display_warehouses' not in final_item:
+                    final_item['display_warehouses'] = []
+
+            new_watch_list[key] = final_item
+        
+        self.watch_list = new_watch_list
 
     def get_watch_list_df(self):
-        return pd.DataFrame(self.watch_list)
+        """
+        Converts Dictionary -> DataFrame for the UI
+        """
+        if not self.watch_list:
+            return pd.DataFrame()
+        return pd.DataFrame(list(self.watch_list.values()))
     
+    def add_history_entry(self, draft_name, found_list):
+        """Records a success before the draft is deleted/replaced."""
+        timestamp = datetime.now().strftime("%H:%M")
+        entry = {
+            "name": draft_name,
+            "found": ", ".join(found_list),
+            "time": timestamp
+        }
+        self.history.appendleft(entry)
 
 @st.cache_resource
 def get_manager():
@@ -118,8 +159,8 @@ def login(mgr):
 
         payload = {
             "mainForm": "mainForm",
-            "mainForm:email": USER_EMAIL,
-            "mainForm:password": USER_PASS,
+            "mainForm:email": mgr.email,
+            "mainForm:password": mgr.password,
             button_id: "",
             "javax.faces.ViewState": view_state
         }
@@ -322,11 +363,7 @@ def html_tabloyu_parse_et(mgr, html_content):
     rows = soup.find_all("tr", role="row")
     if not rows: return pd.DataFrame()
 
-    watchlist_df = mgr.get_watch_list_df()
-    if not watchlist_df.empty and "date" in watchlist_df.columns:
-        takip_edilen_tarihler = set(watchlist_df["date"].values)
-    else:
-        takip_edilen_tarihler = set()
+    takip_edilen_tarihler = set(mgr.watch_list.keys())
     
     veri_listesi = []
     for row in rows:
@@ -519,7 +556,7 @@ def teams_bildirim_gonder(mgr, title, message, facts=None, status="info"):
     except Exception as e:
         print(f"❌ Teams Bağlantı Hatası: {e}")
 
-def analizi_yap(mgr, xml_response, draft_name, limit_mile, target_warehouses_str):
+def analizi_yap(mgr, xml_response, draft_item):
 
     """
     Returns:
@@ -530,6 +567,11 @@ def analizi_yap(mgr, xml_response, draft_name, limit_mile, target_warehouses_str
 
     mgr.add_log("📊 Sonuçlar analiz ediliyor...")
     
+    draft_name = draft_item.get('name', 'Bilinmiyor')
+    limit_mile = draft_item.get('max_mile', mgr.mile_threshold)
+    target_warehouses_str = draft_item.get('targets', "")
+    known_warehouses = draft_item.get('found_warehouses', [])
+
     html_parts = re.findall(r'<!\[CDATA\[(.*?)]]>', xml_response, re.DOTALL)
     full_html = "".join(html_parts)
     soup = BeautifulSoup(full_html, 'html.parser')
@@ -541,9 +583,11 @@ def analizi_yap(mgr, xml_response, draft_name, limit_mile, target_warehouses_str
     current_option = "Bilinmiyor"
 
     target_list = [t.strip().upper() for t in target_warehouses_str.split(',') if t.strip()]
+    previously_found = set(k.upper() for k in known_warehouses)
     
     bulunan_firsatlar = {} # Dictionary to store merged results
     firsat_sayisi = 0
+    found_new = {"found_new": []}
 
     for row in rows:
         if "ui-rowgroup-header" in row.get("class", []):
@@ -574,9 +618,14 @@ def analizi_yap(mgr, xml_response, draft_name, limit_mile, target_warehouses_str
                     
                     # --- PRIORITY 2: MILE LIMIT (COPY CONDITION) ---
                     elif mil < limit_mile:
+                        if dest in previously_found:
+                            print(f"Skipping {dest} (Already copied)")
+                            mgr.add_log(f"Skipping {dest} (Already copied)")
+                            continue
                         mgr.add_log(f"✅ MESAFE UYGUN: {mil} Mil ({dest})", "success")
                         firsat_sayisi += 1
                         bulunan_firsatlar[current_option] = f"{mil} Mil ➡️ {dest}"
+                        found_new["found_new"].append(dest)
 
                 except: pass
 
@@ -589,7 +638,7 @@ def analizi_yap(mgr, xml_response, draft_name, limit_mile, target_warehouses_str
             status="success",
             facts=bulunan_firsatlar # Passes the dictionary we built
         )
-        return True # Return True so the bot knows to proceed with Copying
+        return found_new # Return True so the bot knows to proceed with Copying
 
     return False
 
@@ -771,7 +820,10 @@ def drafti_kopyala(mgr, target_date):
             
     return None
 
-def drafti_planla_backend(mgr, target_date, draft_name, loc, limit_mile, target_warehouses):
+def drafti_planla_backend(mgr, draft_item):
+
+    target_date = draft_item['date']
+    draft_name = draft_item['name']
     try:
         # 1. Draft Aç
         mgr.add_log(f"İşlem başladı: {draft_name}", "info")
@@ -842,20 +894,22 @@ def drafti_planla_backend(mgr, target_date, draft_name, loc, limit_mile, target_
         )
         
         if final_xml:
-            sonuc = analizi_yap(mgr, final_xml, draft_name, limit_mile, target_warehouses)
+            sonuc = analizi_yap(mgr, final_xml, draft_item)
             if sonuc == "FOUND_TARGET":
                 mgr.add_log(f"🏁 {draft_name}: Hedef depo bulunduğu için işlem sonlandırıldı.", "success")
                 return "STOP" # This removes it from the watchlist
             
-            elif sonuc is True:
-                # Kopyala ve yeni ismi döndür
+            elif isinstance(sonuc, dict) and 'found_new' in sonuc:
+                found_wh = sonuc['found_new']
+                
+                # Copy using date
                 yeni_draft_verisi = drafti_kopyala(mgr, target_date)
+                
                 if yeni_draft_verisi:
-                    mgr.add_log(f"✅ {draft_name} süreci tamamlandı. Yeni: {yeni_draft_verisi['name']}", "success")
+                    # Return the new warehouse so it can be saved to the new item
+                    yeni_draft_verisi['newly_found_warehouse'] = found_wh
                     
-                    yeni_draft_verisi['max_mile'] = limit_mile
-                    yeni_draft_verisi['targets'] = target_warehouses
-                    mgr.add_log(f"🔄 {draft_name} kopyalandı. Yeni takip: {yeni_draft_verisi['name']}", "success")
+                    mgr.add_log(f"🔄 {draft_name} kopyalandı ({found_wh}).", "success")
                     return yeni_draft_verisi
             
             mgr.add_log(f"{draft_name} tamamlandı, fırsat yok.", "warning")
@@ -870,16 +924,14 @@ def drafti_planla_backend(mgr, target_date, draft_name, loc, limit_mile, target_
 def address_request_handler(mgr, draft_url, target_date, res_draft):
 
     # Get location:
-    watch_df = mgr.get_watch_list_df()
-    filtered_row = watch_df[watch_df['date'] == target_date]
-    location_value = None
-    if not filtered_row.empty:
-        # 3. Extract the value. You MUST select the 0th index because it is still a list-like object.
-        location_value = filtered_row.iloc[0]["loc"] 
-        print(location_value)
-    else:
-        print("No row found.")
+    draft_data = mgr.watch_list.get(target_date)
+    
+    if not draft_data:
+        print(f"❌ Error: {target_date} not found in watchlist.")
         return None
+        
+    location_value = draft_data["loc"]
+    print(f"📍 Target Location: {location_value}")
     
     # Request the draft page:
 
@@ -1086,69 +1138,76 @@ def rename_draft_sequence(mgr, target_input_id, new_name, soup_page, current_vs)
         return False
 
 def gorev(mgr):
-    if not mgr.is_running:
-        # Optional: Print to console for debug, but don't spam UI logs
-        print("Bot duraklatıldı. Görev atlanıyor.")
-        return
-    current_list = mgr.watch_list
-    if not current_list: return
+    if not mgr.is_running: return
+    if not mgr.watch_list: return
 
-    mgr.add_log(f"⏰ Periyodik kontrol başladı. ({len(current_list)} adet)", "info")
+    mgr.add_log(f"⏰ Periyodik kontrol başladı. ({len(mgr.watch_list)} adet)", "info")
     
-    indices_to_remove = []
-    indices_to_update = {} 
+    tasks = list(mgr.watch_list.values())
+    sorted_tasks = sorted(tasks, key=lambda x: x.get('account_id', ''))
+    
+    keys_to_remove = []
 
-    # 1. GROUP BY ACCOUNT ID
-    # This prevents switching A->B->A->B. It does A, A, A -> Switch -> B, B.
-    # We sort the list by account_id to group them.
-    # Note: We keep the original index 'i' to manage updates/deletions correctly.
-    indexed_list = list(enumerate(current_list))
-    sorted_tasks = sorted(indexed_list, key=lambda x: x[1].get('account_id', ''))
-
-    for i, item in sorted_tasks:
+    for item in sorted_tasks:
+        d_key = item['date'] 
         d_name = item['name']
-        d_date = item['date']
-        d_loc = item['loc']
+        
+        # --- CONTEXT SWITCHING ---
         target_acc_id = item.get('account_id')
         target_acc_name = item.get('account_name', 'Bilinmiyor')
-
-        # --- CONTEXT SWITCHING LOGIC ---
+        
         if target_acc_id and target_acc_id != mgr.current_account_id:
-            mgr.add_log(f"🔄 Hesap Değiştiriliyor: {target_acc_name}...", "warning")
-            success = switch_account_backend(mgr, target_acc_id)
-            if success:
-                mgr.current_account_id = target_acc_id # Update state locally
+            if switch_account_backend(mgr, target_acc_id):
+                mgr.current_account_id = target_acc_id
                 mgr.current_account_name = target_acc_name
-                time.sleep(2) # Wait for session to settle
+                time.sleep(2)
             else:
-                mgr.add_log(f"❌ Hesap geçişi başarısız: {d_name} atlanıyor.", "error")
-                continue # Skip this task if we can't switch
+                continue
 
-        # --- PROCESS (Now we are in the correct account) ---
-        d_limit = item.get('max_mile', mgr.mile_threshold)
-        d_targets = item.get('targets', "") 
+        # --- EXECUTE (Just pass the item!) ---
+        sonuc = drafti_planla_backend(mgr, item)
         
-        sonuc = drafti_planla_backend(mgr, d_date, d_name, d_loc, d_limit, d_targets)
-        
+        # --- UPDATE LOGIC ---
         if sonuc == "STOP":
-            indices_to_remove.append(i)
+            keys_to_remove.append(d_key)
+            
         elif isinstance(sonuc, dict):
-            # Important: Carry over the Account ID to the new copy
+            new_key = sonuc['date']
+            
+            # 1. Update Memory
+            
+            new_found_list = sonuc.pop('newly_found_warehouse', [])
+            if isinstance(new_found_list, str): 
+                new_found_list = [new_found_list]
+
+            known_wh = item.get('found_warehouses', []).copy()
+
+            if new_found_list:
+                for wh in new_found_list:
+                    if wh not in known_wh:
+                        known_wh.append(wh)
+                mgr.add_history_entry(d_name, new_found_list)
+
+            # 2. Transfer Metadata
+            sonuc['found_warehouses'] = known_wh
             sonuc['account_id'] = target_acc_id
             sonuc['account_name'] = target_acc_name
-            indices_to_update[i] = sonuc
+            sonuc['max_mile'] = item.get('max_mile')
+            sonuc['targets'] = item.get('targets')
 
-    # --- REBUILD LIST ---
-    if indices_to_remove or indices_to_update:
-        new_watch_list = []
-        for i, item in enumerate(current_list):
-            if i in indices_to_remove: continue
-            if i in indices_to_update:
-                new_watch_list.append(indices_to_update[i])
+            # 3. Save to Dict
+            if new_key != d_key:
+                keys_to_remove.append(d_key)
+                mgr.watch_list[new_key] = sonuc
             else:
-                new_watch_list.append(item)
-        
-        mgr.update_watch_list(new_watch_list)
+                mgr.watch_list[d_key] = sonuc
+
+    # Cleanup
+    for k in keys_to_remove:
+        if k in mgr.watch_list:
+            del mgr.watch_list[k]
+            
+    if keys_to_remove:
         print("Global manager listesi güncellendi.")
 
 
@@ -1173,7 +1232,7 @@ def main():
             email_input = st.text_input("E-Posta Adresi")
             pass_input = st.text_input("Şifre", type="password")
             
-            if st.button("Giriş Yap", use_container_width=True, type="primary"):
+            if st.button("Giriş Yap", width="stretch", type="primary"):
                 if not email_input or not pass_input:
                     st.error("Lütfen tüm alanları doldurun.")
                 else:
@@ -1288,7 +1347,7 @@ def main():
             label = f"🏢 {current_name}"
             
             # Popover (Açılır Menü)
-            with st.popover(label, use_container_width=True):
+            with st.popover(label, width="stretch"):
                 st.caption("Hesap Değiştir")
                 
                 # DURUM 1: Henüz hesaplar çekilmediyse "Getir" butonu göster
@@ -1306,7 +1365,7 @@ def main():
                             else:
                                 st.error("Çekilemedi.")
                     # FIX: Logic is now INSIDE the button check
-                    if st.button("Hesapları Getir", key="fetch_acc_btn", use_container_width=True):
+                    if st.button("Hesapları Getir", key="fetch_acc_btn", width="stretch"):
                         with st.spinner("Hesaplar çekiliyor..."):
                             if not manager.session.cookies: 
                                 login(manager)
@@ -1332,7 +1391,7 @@ def main():
                                     key=f"btn_switch_{acc['id']}", 
                                     type=btn_style, 
                                     disabled=is_selected, 
-                                    use_container_width=True):
+                                    width="stretch"):
                             
                             with st.spinner(f"{acc['name']} hesabına geçiliyor..."):
                                 success = switch_account_backend(manager, acc['id'])
@@ -1345,16 +1404,33 @@ def main():
         df, hata = veriyi_dataframe_yap(manager)
         
         if df is not None and not df.empty:
+            desired_order = [
+                "Seç", 
+                "Max Mil",
+                "Hedef Depolar",
+                "Draft Name", 
+                "From", 
+                "Created", 
+                "SKUs", 
+                "Units"
+            ]
             grid_response = st.data_editor(
                 df,
+                column_order=desired_order,
                 column_config={
                     "Seç": st.column_config.CheckboxColumn("Ekle", default=False),
                     "Max Mil": st.column_config.NumberColumn("Max Mil", step=50, help="Bu taslak için özel mil sınırı"),
                     "Hedef Depolar": st.column_config.TextColumn("Hedef Depolar", help="Örn: AVP1, TEB3 (Virgülle ayırın)"),
+                    "Draft Name": st.column_config.TextColumn("Taslak Adı", width="large"),
+                    "From": st.column_config.TextColumn("From", width="medium"),
+                    "Created": st.column_config.TextColumn("Oluşturulma Tarihi", width="medium"),
+                    "SKUs": st.column_config.TextColumn("SKUs", width="small"),
+                    "Units": st.column_config.NumberColumn("Units", width="small"),
                     "Action ID": None,
-                    "Copy ID": None
+                    "Copy ID": None,
+                    "Name Input ID": None
                 },
-                disabled=["Draft Name", "From", "Created", "Name Input ID"],
+                disabled=["Draft Name", "From", "Created", "SKUs", "Units"],
                 hide_index=True,
                 width='stretch',
                 key="draft_selector"
@@ -1363,38 +1439,34 @@ def main():
             secili_satirlar = grid_response[grid_response["Seç"] == True]
             
             if st.button(f"➕ Seçili {len(secili_satirlar)} Taslağı Takibe Ekle"):
-                current = manager.watch_list
-                mevcut_tarihler = {item['date'] for item in current if 'date' in item}
-                
                 # GUARD: Ensure we know the current account
                 if not manager.current_account_id:
                     st.error("⚠️ Aktif hesap ID'si bulunamadı. Lütfen önce 'Hesapları Getir' butonuna basın.")
                 else:
-                    eklenen_sayisi = 0
+                    added_count = 0
                     for index, row in secili_satirlar.iterrows():
-                        new_date = row['Created']
+                        key_date = row['Created']
                         
-                        if new_date not in mevcut_tarihler:
-                            current.append({
-                                'account_id': manager.current_account_id,   # <--- SAVE ID
-                                'account_name': manager.current_account_name, # <--- SAVE NAME (Visual)
+                        # Check existence (O(1) speed!)
+                        if key_date not in manager.watch_list:
+                            manager.watch_list[key_date] = {
+                                'account_id': manager.current_account_id,
+                                'account_name': manager.current_account_name,
                                 'name': row['Draft Name'], 
-                                'date': new_date, 
+                                'date': key_date, 
                                 'loc': row["From"],
                                 'max_mile': int(row["Max Mil"]),
-                                'targets': str(row["Hedef Depolar"])
-                            })
-                            mevcut_tarihler.add(new_date)
-                            eklenen_sayisi += 1
-                
-                    if eklenen_sayisi > 0:
-                        manager.update_watch_list(current)
-
-                        st.success(f"{eklenen_sayisi} yeni taslak eklendi ve işlem sıraya alındı!")
-                        time.sleep(1) # Kullanıcı mesajı okusun
+                                'targets': str(row["Hedef Depolar"]),
+                                'found_warehouses': [],
+                            }
+                            added_count += 1
+                    
+                    if added_count > 0:
+                        st.success(f"{added_count} eklendi.")
+                        time.sleep(0.5)
                         st.rerun()
                     else:
-                        st.warning("Seçilenlerin hepsi zaten takip listesinde mevcut.")
+                        st.warning("Seçilenler zaten listede.")
 
     # 3. BÖLÜM: CANLI LOGLAR (SAĞ PANEL)
     with col2:
@@ -1416,6 +1488,27 @@ def main():
 
     st.divider()
 
+    if manager.history:
+        st.success(f"🎉 Toplam {len(manager.history)} işlemde fırsat yakalandı!")
+        
+        # Convert deque to DataFrame
+        history_df = pd.DataFrame(manager.history)
+        
+        st.dataframe(
+            history_df,
+            column_config={
+                "name": st.column_config.TextColumn("📦 İşlenen Taslak", width="medium"),
+                "found": st.column_config.TextColumn("🎯 Bulunanlar", width="large"),
+                "time": st.column_config.TextColumn("🕒 Zaman", width="small")
+            },
+            hide_index=True,
+            width="stretch"
+        )
+        
+        if st.button("Geçmişi Temizle"):
+            manager.history.clear()
+            st.rerun()
+
     # 1. BÖLÜM: TAKİP LİSTESİ YÖNETİMİ
     # We create a layout: [Header Text] --- [Status Text] --- [Start Btn] [Stop Btn]
     list_header_col, status_col, controls_col = st.columns([4, 2, 2], gap="small", vertical_alignment="center")
@@ -1436,7 +1529,7 @@ def main():
         
         with start_btn_col:
             # Start Button
-            if st.button("BAŞLAT", help="Botu Başlat", type="secondary", use_container_width=True, disabled=manager.is_running, ):
+            if st.button("BAŞLAT", help="Botu Başlat", type="secondary", width="stretch", disabled=manager.is_running, ):
                 manager.is_running = True
                 manager.add_log("▶️ Bot başlatıldı.", "success")
                 manager.start_bot_process()
@@ -1449,7 +1542,7 @@ def main():
 
         with stop_btn_col:
             # Stop Button
-            if st.button("DURDUR", help="Botu Durdur", type="secondary", use_container_width=True, disabled=not manager.is_running):
+            if st.button("DURDUR", help="Botu Durdur", type="secondary", width="stretch", disabled=not manager.is_running):
                 manager.is_running = False
                 manager.stop_bot_process()
                 manager.add_log("⏹️ Bot durduruldu.", "warning")
@@ -1460,8 +1553,10 @@ def main():
     watch_df = manager.get_watch_list_df()
 
     if not watch_df.empty:
+        visible_cols = ["account_name", "name", "max_mile", "targets", "loc", "date", "found_warehouses"]
+        display_df = watch_df[[c for c in visible_cols if c in watch_df.columns]]
         edited_watch_df = st.data_editor(
-            watch_df,
+            display_df,
             column_config={
                 "account_name": "Hesap",
                 "name": "Taslak Adı",
@@ -1476,24 +1571,12 @@ def main():
             width='stretch'
         )
         
-        if st.button("💾 Değişiklikleri Kaydet", use_container_width=True):
-            yeni_liste_dict = edited_watch_df.to_dict("records")
-            manager.update_watch_list(yeni_liste_dict)
+        if st.button("💾 Değişiklikleri Kaydet", width="stretch"):
+            manager.update_watch_list_from_df(edited_watch_df.to_dict("records"))
             st.success("Takip listesi güncellendi!")
             st.rerun()
     else:
         st.info("Takip listesi şu an boş. Yukarıdan taslak seçip ekleyin.")
-
-
-    
-    # IMPORTANT: 
-    # 1. Whenever you call a function, pass 'manager' to it.
-    #    Ex: veriyi_dataframe_yap() -> veriyi_dataframe_yap(manager)
-    #    Ex: switch_account_backend(id) -> switch_account_backend(manager, id)
-    
-    st.title("📑 Otomatik Kargo Botu")
-    
-    # ... Rest of your UI code ...
 
 if __name__ == "__main__":
     main()

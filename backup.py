@@ -15,6 +15,8 @@ class GlobalManager:
         # Watch list
         self.watch_list = []
         # Logs
+        # Structure: { "01.30.2026 14:00": { 'name':..., 'loc':... } }
+        self.watch_list = {}
         self.logs = deque(maxlen=50)
 
         self.mile_threshold = 300  # Default value
@@ -842,19 +844,17 @@ def drafti_planla_backend(target_date, draft_name, loc, limit_mile, target_wareh
         manager.add_log(f"Hata ({draft_name}): {str(e)}", "error")
         return None
 
-def address_request_handler(draft_url, target_date, res_draft):
+def address_request_handler(mgr, draft_url, target_date, res_draft):
 
     # Get location:
-    watch_df = manager.get_watch_list_df()
-    filtered_row = watch_df[watch_df['date'] == target_date]
-    location_value = None
-    if not filtered_row.empty:
-        # 3. Extract the value. You MUST select the 0th index because it is still a list-like object.
-        location_value = filtered_row.iloc[0]["loc"] 
-        print(location_value)
-    else:
-        print("No row found.")
+    draft_data = mgr.watch_list.get(target_date)
+    
+    if not draft_data:
+        print(f"❌ Error: {target_date} not found in watchlist.")
         return None
+        
+    location_value = draft_data["loc"]
+    print(f"📍 Target Location: {location_value}")
     
     # Request the draft page:
 
@@ -884,7 +884,7 @@ def address_request_handler(draft_url, target_date, res_draft):
         if pencil_icon: edit_link = pencil_icon.find_parent("a")
 
     if not edit_link:
-        manager.add_log("❌ Kalem butonu bulunamadı.", "error")
+        mgr.add_log("❌ Kalem butonu bulunamadı.", "error")
         return False
 
     edit_btn_id = edit_link.get("id")
@@ -902,7 +902,7 @@ def address_request_handler(draft_url, target_date, res_draft):
     }
     data_rk = ""
     select_btn_id = ""
-    xml_data = manager.session.post(PLAN_URL, data=payload_open)
+    xml_data = mgr.session.post(PLAN_URL, data=payload_open)
     match_vs = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', xml_data.text)
     if match_vs: current_viewstate = match_vs.group(1)
 
@@ -948,7 +948,7 @@ def address_request_handler(draft_url, target_date, res_draft):
                     "javax.faces.ViewState": current_viewstate,
                     **modal_inputs 
                 }
-                res_select = manager.session.post(PLAN_URL, data=payload_select)
+                res_select = mgr.session.post(PLAN_URL, data=payload_select)
                 if res_select.status_code == 200:
                     match_vs_2 = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res_select.text)
                     if match_vs_2: current_viewstate = match_vs_2.group(1)
@@ -965,7 +965,7 @@ def address_request_handler(draft_url, target_date, res_draft):
                         "javax.faces.ViewState": current_viewstate,
                         **modal_form_data
                     }
-                    manager.session.post(PLAN_URL, data=payload_refresh)
+                    mgr.session.post(PLAN_URL, data=payload_refresh)
 
 
             else:
