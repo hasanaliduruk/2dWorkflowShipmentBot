@@ -3,6 +3,8 @@ import pandas as pd
 from datetime import datetime
 import io
 import time
+import streamlit.components.v1 as components
+
 from bot.constants import (
     BASE_URL,
     LOGIN_URL,
@@ -72,27 +74,59 @@ def main():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
-    # 2. SHOW LOGIN SCREEN (If not authenticated)
+    # 2. SHOW LOGIN SCREEN
     if not st.session_state.authenticated:
-        col1, col2, col3 = st.columns([1, 1.5, 1])
+        login_container = st.container()
+        col1, col2, col3 = login_container.columns([1, 1.5, 1])
+        
         with col2:
             st.title("🔒 2DWorkflow Giriş")
             st.caption("Verileriniz kaydedilmez. Doğrudan 2DWorkflow üzerinden giriş yapılır.")
             
-            email_input = st.text_input("E-Posta Adresi")
-            pass_input = st.text_input("Şifre", type="password")
+            with st.form("login_form"):
+                # Note: labels must match the JS querySelector below exactly
+                email_input = st.text_input("E-Posta Adresi")
+                pass_input = st.text_input("Şifre", type="password")
+                
+                # 'Enter' on the LAST field (Password) naturally triggers this button
+                submitted = st.form_submit_button("Giriş Yap", type="primary", use_container_width=True)
+
+            # --- JAVASCRIPT INJECTION START ---
+            # This script intercepts 'Enter' on the Email field to move focus instead of submitting.
+            components.html("""
+            <script>
+            // Access the parent document (the main Streamlit app)
+            const doc = window.parent.document;
             
-            if st.button("Giriş Yap", width="stretch", type="primary"):
+            // Wait briefly for Streamlit to render the DOM
+            setTimeout(() => {
+                // Select inputs by their aria-label (Streamlit uses label text as aria-label)
+                const email = doc.querySelector('input[aria-label="E-Posta Adresi"]');
+                const pass = doc.querySelector('input[aria-label="Şifre"]');
+                
+                if (email && pass) {
+                    email.addEventListener('keydown', function(e) {
+                        if (e.key === 'Enter') {
+                            // Stop the default "Form Submit" behavior
+                            e.preventDefault();
+                            e.stopPropagation();
+                            // Move focus to password
+                            pass.focus();
+                        }
+                    });
+                }
+            }, 500); // 500ms delay to ensure elements exist
+            </script>
+            """, height=0, width=0)
+
+            if submitted:
                 if not email_input or not pass_input:
                     st.error("Lütfen tüm alanları doldurun.")
                 else:
                     with st.spinner("Bağlanılıyor..."):
                         # CHECK 1: Is there already a running bot for this user?
                         if email_input in BOT_STORE:
-                            # YES! Re-attach to the existing bot
                             existing_mgr = BOT_STORE[email_input]
-                            
-                            # Update credentials in case they changed (optional)
                             existing_mgr.password = pass_input 
                             
                             st.session_state.authenticated = True
@@ -107,15 +141,12 @@ def main():
                             success = login(temp_mgr)
                             
                             if success:
-                                # Save to Global Store so it survives logout
                                 BOT_STORE[email_input] = temp_mgr
-                                
                                 st.session_state.authenticated = True
                                 st.session_state.my_manager = temp_mgr
                                 st.rerun()
-                            #else:
-                                #st.error(msg)
-                                # Don't delete temp_mgr explicitly, just let it go out of scope
+                            else:
+                                st.error("Giriş başarısız.") 
         return
 
     # 3. SHOW DASHBOARD (If authenticated)
@@ -190,27 +221,70 @@ def main():
     title_text = "2D Workflow Bot"
     st.markdown(f"""
         <style>
-        /* 1. Ensure the tab list takes full width so we can push content to the right */
-        div[data-baseweb="tab-list"] {{
-            display: flex;
-            margin-top: 20px;
-            width: 100%;
-        }}
-        
-        /* 2. Create a pseudo-element after the last tab */
-        div[data-baseweb="tab-list"]::after {{
-            content: "{title_text}"; /* The text to display */
-            margin-left: auto;            /* Pushes this element to the far right */
-            align_self: center;           /* Vertically center it */
-            margin-right: 1rem;           /* Add some right padding */
-            
-            font-weight: bold;
-            font-size: 1.5rem;
-            padding: 0;
-            color: white;        /* Dynamic color */
-        }}
+               /* GLOBAL DEFAULTS */
+               .block-container {{
+                    padding-top: 1rem;
+                    padding-bottom: 2rem;
+                    padding-left: 2rem;
+                    padding-right: 2rem;
+                }}
+                
+                /* COMPACT TABLES */
+                div[data-testid="stDataEditor"] div[data-testid="stDataFrame"] table {{
+                    font-size: 0.85rem !important;
+                }}
+                
+                /* VERTICAL GAP REDUCTION */
+                div[data-testid="stVerticalBlock"] > div {{
+                    gap: 0.5rem;
+                }}
+
+               /* --- RESPONSIVE MOBILE STYLES (Max width 768px) --- */
+               @media (max-width: 768px) {{
+                    /* Use full screen width on mobile */
+                    .block-container {{
+                        padding-left: 0.5rem !important;
+                        padding-right: 0.5rem !important;
+                        padding-top: 1rem !important;
+                    }}
+                    
+                    /* Adjust font sizes for mobile readability */
+                    h1 {{ font-size: 1.8rem !important; }}
+                    h2 {{ font-size: 1.5rem !important; }}
+                    h3 {{ font-size: 1.3rem !important; }}
+                    
+                    /* Hide the custom right-aligned title on mobile to prevent overlap */
+                    div[data-baseweb="tab-list"]::after {{
+                        display: none !important;
+                    }}
+                    
+                    /* Allow tabs to wrap or scroll more easily */
+                    div[data-baseweb="tab-list"] {{
+                        flex-wrap: wrap;
+                    }}
+               }}
+
+               /* --- DESKTOP ONLY STYLES (Min width 769px) --- */
+               @media (min-width: 769px) {{
+                    /* Inject title only on desktop where there is space */
+                    div[data-baseweb="tab-list"] {{
+                        display: flex;
+                        width: 100%;
+                    }}
+                    
+                    div[data-baseweb="tab-list"]::after {{
+                        content: "{title_text}";
+                        margin-left: auto;
+                        align_self: center;
+                        margin-right: 1rem;
+                        font-weight: bold;
+                        font-size: 1.5rem;
+                        padding: 0;
+                        color: #FAFAFA; /* Adjusted for dark mode visibility */
+                    }}
+               }}
         </style>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
     tab_selection, tab_dashboard, tab_logs = st.tabs([ "Taslak Seçimi", "Aktif Takip (Dashboard)", "Loglar"])
 
     with tab_dashboard:
@@ -402,11 +476,14 @@ def main():
             st.markdown("**:red[● DURDURULDU]**", help="Bot şu an işlem yapmıyor.")
 
     with controls_col:
-        # Nested columns for tight button spacing
-        start_btn_col, stop_btn_col = st.columns(2)
-        
-        with start_btn_col:
-            # Start Button
+        if manager.is_running: 
+            if st.button("DURDUR", help="Botu Durdur", type="secondary", width="stretch", disabled=not manager.is_running):
+                manager.is_running = False
+                manager.stop_bot_process()
+                manager.add_log("⏹️ Bot durduruldu.", "warning")
+                st.toast("Bot durduruldu.")
+                st.rerun()
+        else:
             if st.button("BAŞLAT", help="Botu Başlat", type="secondary", width="stretch", disabled=manager.is_running, ):
                 manager.is_running = True
                 manager.add_log("▶️ Bot başlatıldı.", "success")
@@ -418,15 +495,7 @@ def main():
                         st.toast("Bot başlatıldı, ilk kontrol yapılıyor...")
                     except: pass
                 st.rerun()
-
-        with stop_btn_col:
-            # Stop Button
-            if st.button("DURDUR", help="Botu Durdur", type="secondary", width="stretch", disabled=not manager.is_running):
-                manager.is_running = False
-                manager.stop_bot_process()
-                manager.add_log("⏹️ Bot durduruldu.", "warning")
-                st.toast("Bot durduruldu.")
-                st.rerun()
+            
     if manager.is_running:
         job = manager.scheduler.get_job('user_task')
         if job and job.next_run_time:
