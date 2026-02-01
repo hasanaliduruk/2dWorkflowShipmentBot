@@ -342,9 +342,9 @@ def drafti_planla_backend(mgr, draft_item):
         
         if final_xml:
             sonuc = analizi_yap(mgr, final_xml, draft_item)
-            if sonuc == "FOUND_TARGET":
+            if isinstance(sonuc, dict) and "found_target" in sonuc:
                 mgr.add_log(f"🏁 {draft_name}: Hedef depo bulunduğu için işlem sonlandırıldı.", "success")
-                return "STOP" # This removes it from the watchlist
+                return {"STOP": sonuc["found_target"]}
             
             elif isinstance(sonuc, dict) and 'found_new' in sonuc:
                 found_wh = sonuc['found_new']
