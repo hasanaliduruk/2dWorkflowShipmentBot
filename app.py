@@ -42,7 +42,13 @@ except:
 # --- FONKSİYONLAR ---
 
 
-
+@st.fragment(run_every=2)
+def canli_loglari_goster(manager):
+    st.info("⚡ Canlı Log Akışı (Otomatik Yenilenir)")
+    log_container = st.container(height=400)
+    with log_container:
+        for log in manager.logs:
+            st.text(log)
 
 
 # --- MAIN APPLICATION FLOW ---
@@ -449,16 +455,7 @@ def main():
                         st.warning("Seçilenler zaten listede.")
 
     with tab_logs:
-        if st.button("Logları Yenile"):
-            pass # Sadece rerun tetikler
-        
-        log_container = st.container(height=400)
-        with log_container:
-            for log in manager.logs:
-                st.text(log)
-                
-        # Otomatik yenileme notu
-        st.caption("Loglar arka planda birikir. Sayfayı yenileyerek veya butona basarak görebilirsiniz.")
+        canli_loglari_goster(manager)
 
     
     # 1. BÖLÜM: TAKİP LİSTESİ YÖNETİMİ

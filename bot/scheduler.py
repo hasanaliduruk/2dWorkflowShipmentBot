@@ -18,7 +18,7 @@ def gorev(mgr):
     tasks = list(mgr.watch_list.values())
     sorted_tasks = sorted(tasks, key=lambda x: x.get('account_id', ''))
     
-    keys_to_remove = []
+    #keys_to_remove = []
 
     for item in sorted_tasks:
         d_key = item['date'] 
@@ -42,9 +42,10 @@ def gorev(mgr):
         
         # --- UPDATE LOGIC ---
         if isinstance(sonuc, dict) and 'STOP' in sonuc:
-            keys_to_remove.append(d_key)
             new_found_list = sonuc.pop("STOP")
             mgr.add_history_entry(d_name, new_found_list, d_account)
+            if d_key in mgr.watch_list:
+                del mgr.watch_list[d_key]
             
         elif isinstance(sonuc, dict):
             new_key = sonuc['date']
@@ -82,17 +83,9 @@ def gorev(mgr):
             sonuc['max_mile'] = item.get('max_mile')
             sonuc['targets'] = item.get('targets')
 
-            # 3. Save to Dict
             if new_key != d_key:
-                keys_to_remove.append(d_key)
+                if d_key in mgr.watch_list:
+                    del mgr.watch_list[d_key]
                 mgr.watch_list[new_key] = sonuc
             else:
                 mgr.watch_list[d_key] = sonuc
-
-    # Cleanup
-    for k in keys_to_remove:
-        if k in mgr.watch_list:
-            del mgr.watch_list[k]
-            
-    if keys_to_remove:
-        print("Global manager listesi güncellendi.")
