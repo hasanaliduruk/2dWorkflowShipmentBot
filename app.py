@@ -179,9 +179,18 @@ def main():
         st.header("⚙️ Ayarlar")
         
         # --- SCHEDULER SETTINGS ---
+        options = ["Dakika Bazlı (Interval)", "Saat Başı ve Buçuk (00, 30)", "Çeyrek Saatler (00, 15, 30, 45)"]
+        default_index = 0
+        if manager.scheduler_mode == "half_hourly":
+            default_index = 1
+        elif manager.scheduler_mode == "quarterly":
+            default_index = 2
+        
+        # 2. Index parametresini ekle (DÜZELTME BURADA)
         mode_label = st.radio(
             "Zamanlama Modu", 
-            ["Dakika Bazlı (Interval)", "Saat Başı ve Buçuk (00, 30)", "Çeyrek Saatler (00, 15, 30, 45)"],
+            options,
+            index=default_index,  # <--- BU SATIR EKSİKTİ
             captions=["Belirlediğiniz dakika aralığında çalışır.", "Her saat başı ve buçukta (örn 14:00, 14:30) çalışır.", "Her 15 dakikada bir (örn 14:15, 14:45) çalışır."]
         )
         
@@ -190,9 +199,11 @@ def main():
         if "Saat Başı" in mode_label: new_mode = "half_hourly"
         elif "Çeyrek" in mode_label: new_mode = "quarterly"
         
+        # Sadece gerçekten bir değişiklik varsa güncelle
         if new_mode != manager.scheduler_mode:
             manager.scheduler_mode = new_mode
-            if manager.is_running: manager.start_bot_process() # Restart with new mode
+            if manager.is_running: 
+                manager.start_bot_process() # Restart with new mode
             st.toast("✅ Zamanlayıcı güncellendi")
 
         # Mil Ayarı
