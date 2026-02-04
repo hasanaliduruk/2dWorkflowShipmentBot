@@ -103,7 +103,7 @@ def poll_results_until_complete(session, base_payload, referer_url):
                 "mainForm:planingStatusDialogPoll": "mainForm:planingStatusDialogPoll",
                 "mainForm": "mainForm"
             }
-            res = session.post(PLAN_URL, data={**base_payload, **poll_params}, headers={"Referer": referer_url})
+            res = session.post(PLAN_URL, data={**base_payload, **poll_params}, headers={"Referer": referer_url}, timeout=20)
             
             if "javax.faces.ViewState" in res.text:
                 try:
@@ -306,12 +306,10 @@ def drafti_planla_backend(mgr, draft_item):
         if not redirect_url:
             mgr.add_log(f"{draft_name} açılamadı.", "error")
             return None # Return None = Kopyalama olmadı
-
-        mgr.session.get(redirect_url) # Detay sayfası
         
         # 2. Planlama
         mgr.add_log("🚀 Planlama başlatılıyor...")
-        detay_res = mgr.session.get(redirect_url)
+        detay_res = mgr.session.get(redirect_url, timeout=45)
         detay_form_data = form_verilerini_topla(detay_res.text)
         create_plan_params = {
             "javax.faces.partial.ajax": "true",
@@ -321,7 +319,7 @@ def drafti_planla_backend(mgr, draft_item):
             "mainForm:create_plan": "mainForm:create_plan",
             "mainForm": "mainForm"
         }
-        res_plan = mgr.session.post(PLAN_URL, data={**detay_form_data, **create_plan_params}, headers={"Referer": redirect_url})
+        res_plan = mgr.session.post(PLAN_URL, data={**detay_form_data, **create_plan_params}, headers={"Referer": redirect_url}, timeout=45)
         
         if "ui-messages-error" in res_plan.text:
              mgr.add_log("Planlama hatası.", "error")
