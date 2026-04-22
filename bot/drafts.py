@@ -31,6 +31,12 @@ def html_tabloyu_parse_et(mgr, html_content):
             name_input = cells[2].find("input")
             draft_name = name_input['value'] if name_input else cells[2].get_text(strip=True)
             name_input_id = name_input["id"]
+            cell_editor_id = None
+            if name_input:
+                editor_div = name_input.find_parent("div", class_="ui-cell-editor")
+                if editor_div and editor_div.has_attr("id"):
+                    cell_editor_id = editor_div["id"]
+            print(cell_editor_id)
             open_link = row.find("a", title="Open Draft Shipment")
             if not open_link: open_link = cells[1].find("a") 
             row_action_id = open_link.get("id") if open_link else None
@@ -66,7 +72,8 @@ def html_tabloyu_parse_et(mgr, html_content):
                 "Action ID": row_action_id,
                 "Copy ID": copy_action_id,
                 "Name Input ID": name_input_id,
-                "Link": href
+                "Link": href,
+                "UI Cell Editor": cell_editor_id
             })
             
         except Exception as e: 
@@ -220,6 +227,7 @@ def drafti_kopyala(mgr, target_date):
                 yeni_tarih = yeni_satir.iloc[0]["Created"]
                 loc = yeni_satir.iloc[0]["From"]
                 new_input_id = yeni_satir.iloc[0]["Name Input ID"]
+                new_target_editor_id = yeni_satir.iloc[0]["UI Cell Editor"]
                 clean_base = re.sub(r'(\s*-\s*copy|\s*copy|\s*-\s*clone)+', '', new_draft_name, flags=re.IGNORECASE).strip()
                 # Eski tarihleri temizle
                 clean_base = re.sub(r'\s\d{2}[/.-]\d{2}\s\d{2}:\d{2}:\d{2}$', '', clean_base)
@@ -234,7 +242,7 @@ def drafti_kopyala(mgr, target_date):
                 current_vs = vs_input.get("value")
                 
                 # --- RENAME SEQUENCE ÇAĞIR ---
-                if rename_draft_sequence(mgr, new_input_id, new_clean_name, soup_list, current_vs):
+                if rename_draft_sequence(mgr, new_input_id, new_target_editor_id, new_clean_name, soup_list, current_vs):
                     final_draft_name = new_clean_name
                     mgr.add_log(f"✏️ İsim düzeltildi: {new_clean_name}")
                 else:
@@ -289,6 +297,7 @@ def drafti_planla_backend(mgr, draft_item):
             mgr.add_log(f"⚠️ {draft_name} listede bulunamadı! (Tarih eşleşmedi)", "warning")
             return None
         current_action_id = target_row.iloc[0]["Action ID"]
+        print(target_row)
         
         ## OLD VERSION
 
@@ -512,7 +521,7 @@ def address_request_handler(mgr, draft_url, target_date, res_draft):
     else:
         print("Could not find the update tag with the table ID.")
 
-def rename_draft_sequence(mgr, target_input_id, new_name, soup_page, current_vs):
+def rename_draft_sequence(mgr, target_input_id, target_editor_id, new_name, soup_page, current_vs):
     """
     Executes the 2-step rename sequence:
     1. Full Table Update (Request 1)
@@ -523,6 +532,13 @@ def rename_draft_sequence(mgr, target_input_id, new_name, soup_page, current_vs)
     # --- STEP 1: PREPARE PAYLOAD FOR REQUEST #1 (FULL TABLE) ---
     form = soup_page.find("form", id="mainForm")
     if not form: return False
+
+    try:
+        row_index = target_input_id.split(':')[2]
+    except IndexError:
+        print("❌ Hata: target_input_id formatı satır indeksini içermiyor.")
+        return False
+    
 
     # Scrape ALL inputs to mimic the browser's full table submission
     payload_req1 = {}
@@ -536,19 +552,26 @@ def rename_draft_sequence(mgr, target_input_id, new_name, soup_page, current_vs)
 
     # Overwrite the specific target input with the NEW name
     payload_req1[target_input_id] = new_name
+
+    if target_editor_id:
+        payload_req1[target_editor_id] = target_editor_id
     
     # Add JSF Table Parameters (From your Request 1)
     payload_req1.update({
         "javax.faces.partial.ajax": "true",
         "javax.faces.source": "mainForm:drafts", # Table ID
         "javax.faces.partial.execute": "mainForm:drafts",
-        "javax.faces.partial.render": "mainForm:drafts",
-        "mainForm:drafts": "mainForm:drafts",
+        "javax.faces.partial.render": "@none mainForm:drafts",
+        "javax.faces.behavior.event": "cellEdit",
+        "javax.faces.partial.event": "cellEdit",
         "mainForm:drafts_encodeFeature": "true",
+        "mainForm:drafts_cellInfo": f"{row_index},2",
+        "mainForm": "mainForm",
         "javax.faces.ViewState": current_vs
     })
 
     headers = {
+        "Accept": "application/xml, text/xml, */*; q=0.01",
         "User-Agent": USER_AGENT,
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "Faces-Request": "partial/ajax",
@@ -559,8 +582,8 @@ def rename_draft_sequence(mgr, target_input_id, new_name, soup_page, current_vs)
     try:
         # --- SEND REQUEST #1 ---
         res1 = mgr.session.post(DRAFT_PAGE_URL, data=payload_req1, headers=headers)
-        
-        if res1.status_code != 200:
+        print(res1.text)
+        if res1.status_code != 200 or "validationFailed" in res1.text:
             print(f"❌ Request 1 Failed: {res1.status_code}")
             return False
 
@@ -570,22 +593,23 @@ def rename_draft_sequence(mgr, target_input_id, new_name, soup_page, current_vs)
         next_viewstate = vs if vs else current_vs
         
         # --- STEP 2: PREPARE PAYLOAD FOR REQUEST #2 (CHANGE EVENT) ---
+        print(target_input_id)
+        print(new_name)
         payload_req2 = {
             "javax.faces.partial.ajax": "true",
             "javax.faces.source": target_input_id,
             "javax.faces.partial.execute": target_input_id,
             "javax.faces.behavior.event": "change",
             "javax.faces.partial.event": "change",
-            "javax.faces.partial.render": "@none", # Assuming we don't need re-render
-            target_input_id: new_name, # The Key must be the Input ID
-            "mainForm": "mainForm",
-            "javax.faces.ViewState": next_viewstate # Use the FRESH ViewState
+            target_input_id: new_name, # Değişen değer tekrar gönderiliyor
+            "javax.faces.ViewState": next_viewstate
         }
 
         # --- SEND REQUEST #2 ---
         res2 = mgr.session.post(DRAFT_PAGE_URL, data=payload_req2, headers=headers)
-        
-        if res2.status_code == 200:
+        print("\n\n=====================================\n\n")
+        print(res2.text)
+        if res2.status_code == 200 and "validationFailed" not in res2.text:
             print(f"✅ Rename Sequence Complete: {new_name}")
             return True
         else:

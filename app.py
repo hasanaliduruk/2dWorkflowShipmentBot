@@ -512,7 +512,7 @@ def main():
         else:
             st.warning("⚠️ Bot çalışıyor ama zamanlayıcı bulunamadı.")
 
-    # --- DATAFRAME EDITOR ---
+    # --- DATAFRAME EDITOR ---2026-04-22 18:06:30.122 The fragment with id 1d46e8af4b3881e69a8b99ad1593351b does not exist anymore - it might have been removed during a preceding full-app rerun.
     watch_df = manager.get_watch_list_df()
 
     if not watch_df.empty:

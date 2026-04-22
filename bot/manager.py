@@ -129,3 +129,5 @@ class GlobalManager:
             "time": timestamp
         }
         self.history.appendleft(entry)
+    def set_mile_threshold(self, mile):
+        self.mile_threshold = mile
