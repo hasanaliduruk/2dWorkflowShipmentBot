@@ -46,6 +46,10 @@ def html_tabloyu_parse_et(mgr, html_content):
             created_date = cells[10].get_text(strip=True)
             units = cells[9].get_text(strip=True)
             skus = cells[8].get_text(strip=True)
+
+            href = open_link.get("href")
+            if not href:
+                href = None
             
             # --- AUTO SELECT MANTIĞI ---
             # Eğer bu draft ismi, oluşturduğumuz kopyalar listesindeyse TRUE yap
@@ -61,7 +65,8 @@ def html_tabloyu_parse_et(mgr, html_content):
                 "Created": created_date,
                 "Action ID": row_action_id,
                 "Copy ID": copy_action_id,
-                "Name Input ID": name_input_id
+                "Name Input ID": name_input_id,
+                "Link": href
             })
             
         except Exception as e: 
@@ -284,7 +289,10 @@ def drafti_planla_backend(mgr, draft_item):
             mgr.add_log(f"⚠️ {draft_name} listede bulunamadı! (Tarih eşleşmedi)", "warning")
             return None
         current_action_id = target_row.iloc[0]["Action ID"]
+        
+        ## OLD VERSION
 
+        '''
         form_data = form_verilerini_topla(main_res.text)
         action_payload = {
             "javax.faces.partial.ajax": "true",
@@ -294,7 +302,7 @@ def drafti_planla_backend(mgr, draft_item):
             "mainForm": "mainForm"
         }
         res_open = mgr.session.post(DRAFT_PAGE_URL, data={**form_data, **action_payload})
-        
+        #print(res_open.text)
         # Redirect Check
         redirect_url = None
         if "<redirect" in res_open.text:
@@ -306,7 +314,13 @@ def drafti_planla_backend(mgr, draft_item):
         if not redirect_url:
             mgr.add_log(f"{draft_name} açılamadı.", "error")
             return None # Return None = Kopyalama olmadı
+        '''
         
+        redirect_url = urllib.parse.urljoin(BASE_URL, target_row.iloc[0]["Link"])
+        if redirect_url == None:
+            mgr.add_log(f"{draft_name} açılamadı", "error")
+            return None
+
         # 2. Planlama
         mgr.add_log("🚀 Planlama başlatılıyor...")
         detay_res = mgr.session.get(redirect_url, timeout=45)
