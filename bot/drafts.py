@@ -49,7 +49,7 @@ def html_tabloyu_parse_et(mgr, html_content):
             copy_action_id = copy_link.get("id") if copy_link else None
 
             from_loc = cells[3].get_text(strip=True)
-            created_date = cells[10].get_text(strip=True)
+            created_date = cells[9].get_text(strip=True)
             units = cells[9].get_text(strip=True)
             skus = cells[8].get_text(strip=True)
 
@@ -76,9 +76,12 @@ def html_tabloyu_parse_et(mgr, html_content):
                 "UI Cell Editor": cell_editor_id
             })
             
+            
         except Exception as e: 
             print(e)
             continue
+    #for veri in veri_listesi:
+    #    print(f"\n\n{veri}\n\n")
     return pd.DataFrame(veri_listesi)
 
 def veriyi_dataframe_yap(mgr):
