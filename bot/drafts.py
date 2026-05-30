@@ -13,7 +13,7 @@ from bot.constants import (
     USER_AGENT,
 )
 from bot.auth import login
-from bot.jsf import form_verilerini_topla, extract_viewstate, jsf_ajax_payload
+from bot.jsf import form_verilerini_topla, extract_viewstate, jsf_ajax_payload, auto_resolve_jsf_states
 from bot.analysis import analizi_yap
 
 def html_tabloyu_parse_et(mgr, html_content):
@@ -119,7 +119,6 @@ def poll_results_until_complete(session, base_payload, referer_url):
                 "mainForm": "mainForm"
             }
             res = session.post(PLAN_URL, data={**base_payload, **poll_params}, headers={"Referer": referer_url}, timeout=20)
-            
             if "javax.faces.ViewState" in res.text:
                 try:
                     match = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res.text)
@@ -131,7 +130,6 @@ def poll_results_until_complete(session, base_payload, referer_url):
             
             match_percent = re.search(r'>\s*(\d+)\s*%\s*<', res.text)
             current_percent = int(match_percent.group(1)) if match_percent else 0
-
             if current_percent == 0 and last_percent > 50: return res.text
             if current_percent > last_percent: last_percent = current_percent
             time.sleep(5)
@@ -334,7 +332,7 @@ def drafti_planla_backend(mgr, draft_item):
             return None
 
         # 2. Planlama
-        mgr.add_log("🚀 Planlama başlatılıyor...")
+        mgr.add_log(f"🚀 Planlama baslatiliyor")
         detay_res = mgr.session.get(redirect_url, timeout=45)
         detay_form_data = form_verilerini_topla(detay_res.text)
         create_plan_params = {
@@ -342,23 +340,26 @@ def drafti_planla_backend(mgr, draft_item):
             "javax.faces.source": "mainForm:create_plan",
             "javax.faces.partial.execute": "@all",
             "javax.faces.partial.render": "mainForm",
-            "mainForm:create_plan": "mainForm:create_plan",
+            "mainForm:create_plan_pc": "mainForm:create_plan_pc",
             "mainForm": "mainForm"
         }
         res_plan = mgr.session.post(PLAN_URL, data={**detay_form_data, **create_plan_params}, headers={"Referer": redirect_url}, timeout=45)
-        
-        if "ui-messages-error" in res_plan.text:
-             mgr.add_log("Planlama hatası.", "error")
-             return None
 
+        if "ui-messages-error" in res_plan.text:
+            mgr.add_log("Planlama hatası.", "error")
+            return None
+    
+        res_plan, resolved_count = auto_resolve_jsf_states(mgr.session, res_plan, redirect_url)
+        vs_match = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res_plan.text)
+        if vs_match: 
+            detay_form_data["javax.faces.ViewState"] = vs_match.group(1)
         # 3. Polling
         if "javax.faces.ViewState" in res_plan.text:
             try:
                  match = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res_plan.text)
                  if match: detay_form_data["javax.faces.ViewState"] = match.group(1)
             except: pass
-
-        final_xml = final_xml = poll_results_until_complete(
+        final_xml = poll_results_until_complete(
             mgr.session, 
             detay_form_data, 
             redirect_url, 

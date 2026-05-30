@@ -19,3 +19,6 @@ Thumbs.db
 backup/
 backup.zip
 old/
+
+debug_initial_res.xml
+last_plan_response.xml
