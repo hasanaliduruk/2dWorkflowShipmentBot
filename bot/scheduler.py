@@ -21,7 +21,8 @@ def gorev(mgr):
     #keys_to_remove = []
 
     for item in sorted_tasks:
-        d_key = item['date'] 
+        d_key = item['draft_id']
+        print(d_key)
         d_name = item['name']
         d_account = item['account_name']
         
@@ -48,7 +49,7 @@ def gorev(mgr):
                 del mgr.watch_list[d_key]
             
         elif isinstance(sonuc, dict):
-            new_key = sonuc['date']
+            new_key = sonuc['draft_id']
             
             # 1. Update Memory
             
@@ -79,6 +80,7 @@ def gorev(mgr):
             # 2. Transfer Metadata
             sonuc['found_warehouses'] = known_wh
             sonuc['account_id'] = target_acc_id
+            sonuc['date'] = item.get('date')
             sonuc['account_name'] = target_acc_name
             sonuc['max_mile'] = item.get('max_mile')
             sonuc['targets'] = item.get('targets')

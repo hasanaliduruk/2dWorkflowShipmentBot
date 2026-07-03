@@ -1,9 +1,15 @@
 from bs4 import BeautifulSoup
 import urllib.parse
+from urllib.parse import urlparse, parse_qs
 from datetime import datetime
 import time
 import re
 import pandas as pd
+import requests
+import json
+import string
+import random
+import traceback
 
 from bot.constants import (
     BASE_URL,
@@ -50,21 +56,27 @@ def html_tabloyu_parse_et(mgr, html_content):
 
             from_loc = cells[3].get_text(strip=True)
             created_date = cells[9].get_text(strip=True)
-            units = cells[9].get_text(strip=True)
-            skus = cells[8].get_text(strip=True)
+            units = cells[8].get_text(strip=True)
+            skus = cells[7].get_text(strip=True)
 
             href = open_link.get("href")
+            draft_id = None
+
             if not href:
                 href = None
+            else:
+                parsed_url = urlparse(href)
+                query_params = parse_qs(parsed_url.query)
+                draft_id = query_params.get('id', [None])[0]
             
             # --- AUTO SELECT MANTIĞI ---
             # Eğer bu draft ismi, oluşturduğumuz kopyalar listesindeyse TRUE yap
-            
 
             secili_mi = created_date in takip_edilen_tarihler
             veri_listesi.append({
                 "Seç": secili_mi, # Dinamik seçim
                 "Draft Name": draft_name,
+                "Draft Id": draft_id,
                 "From": from_loc,
                 "SKUs": skus,
                 "Units": units,
@@ -112,13 +124,13 @@ def poll_results_until_complete(session, base_payload, referer_url):
         try:
             poll_params = {
                 "javax.faces.partial.ajax": "true",
-                "javax.faces.source": "mainForm:planingStatusDialogPoll",
-                "javax.faces.partial.execute": "@all",
-                "javax.faces.partial.render": "mainForm:shipmentPlansPanel mainForm:a2dw_boxContentPanel mainForm:progressBarPlaning",
-                "mainForm:planingStatusDialogPoll": "mainForm:planingStatusDialogPoll",
-                "mainForm": "mainForm"
+                "javax.faces.source": "enrichmentStateForm:j_idt1722",
+                "javax.faces.partial.execute": "enrichmentStateForm:j_idt1722",
+                "javax.faces.partial.render": "@none",
+                "enrichmentStateForm:j_idt1722": "enrichmentStateForm:j_idt1722",
+                "enrichmentStateForm": "enrichmentStateForm"
             }
-            res = session.post(PLAN_URL, data={**base_payload, **poll_params}, headers={"Referer": referer_url}, timeout=20)
+            res = session.post(PLAN_URL, data={**base_payload, **poll_params}, headsers={"Referer": referer_url}, timeout=20)
             if "javax.faces.ViewState" in res.text:
                 try:
                     match = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res.text)
@@ -136,7 +148,60 @@ def poll_results_until_complete(session, base_payload, referer_url):
         except: time.sleep(5)
     return None
 
-def drafti_kopyala(mgr, target_date):
+def listen_for_shipment_completion(mgr, session: requests.Session, domain_url: str) -> dict:
+    mgr.add_log("📡 SSE Bağlantısı kuruluyor...", "info")
+
+    random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=11))
+    client_id = f"sw-{random_str}"
+    sse_url = f"{domain_url}/api/sse/jobs/session?clientId={client_id}"
+
+    headers = {
+        "Accept": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Pragma": "no-cache",
+        "User-Agent": USER_AGENT
+    }
+
+    # KESİN DÜZELTME: 'with' bloğu soketin her senaryoda kapatılmasını zorunlu kılar
+    with session.get(sse_url, stream=True, headers=headers, timeout=(10, 300)) as response:
+        response.raise_for_status()
+
+        current_event_type = None
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or line.startswith(":"):
+                continue
+
+            if line.startswith("event:"):
+                current_event_type = line.split(":", 1)[1].strip()
+
+            elif line.startswith("data:"):
+                data_str = line.split(":", 1)[1].strip()
+
+                if current_event_type == "job-status-global":
+                    try:
+                        payload = json.loads(data_str)
+
+                        if payload.get("type") == "CREATE_SHIPMENT_PLAN":
+                            status = payload.get("status")
+                            done = payload.get("done", 0)
+                            total = payload.get("total", 0)
+
+                            if status == "DONE" or (total > 0 and done == total):
+                                mgr.add_log("🟢 SSE Akışı Tamamlandı.", "success")
+                                return payload  # Fonksiyondan çıkarken 'with' bloğu soketi otomatik kapatır
+
+                            elif status == "FAILED" or payload.get("errorMessage"):
+                                raise RuntimeError(f"Sunucu Hatası: {payload.get('errorMessage')}")
+
+                    except json.JSONDecodeError:
+                        continue
+
+    # Sunucu veriyi bitirmeden soketi kapatırsa
+    raise ConnectionError("Sunucu, işlem tamamlanmadan SSE bağlantısını kesti (EOF).")
+
+def drafti_kopyala(mgr, target_id):
     """
     Kopyalama yapar ve YENİ OLUŞAN DRAFT'IN ADINI döndürür.
     """
@@ -149,9 +214,9 @@ def drafti_kopyala(mgr, target_date):
     df = html_tabloyu_parse_et(mgr, res.text)
     if df.empty: return None
 
-    ilgili_satir = df[df["Created"] == target_date]
+    ilgili_satir = df[df["Draft Id"] == target_id]
     if ilgili_satir.empty: 
-        mgr.add_log("Kopyalanacak satır tarihle bulunamadı.", "error")
+        mgr.add_log("Kopyalanacak satır id ile bulunamadı.", "error")
         return None
     
     copy_id = ilgili_satir.iloc[0]["Copy ID"]
@@ -216,7 +281,7 @@ def drafti_kopyala(mgr, target_date):
             
             if base_loc.lower() not in new_location.lower():
                 mgr.add_log(f"📍 Adres düzeltiliyor: {new_location} -> {base_loc}", "warning")
-                address_request_handler(mgr, full_redirect_url, target_date, new_page_res)
+                address_request_handler(mgr, full_redirect_url, target_id, new_page_res)
             
             time.sleep(2) # Sistemin oturması için
             res_check = mgr.session.get(DRAFT_PAGE_URL)
@@ -284,6 +349,7 @@ def drafti_kopyala(mgr, target_date):
 def drafti_planla_backend(mgr, draft_item):
 
     target_date = draft_item['date']
+    target_id = draft_item['draft_id']
     draft_name = draft_item['name']
     try:
         # 1. Draft Aç
@@ -292,7 +358,7 @@ def drafti_planla_backend(mgr, draft_item):
         if "login.jsf" in main_res.url: login(mgr); main_res = mgr.session.get(DRAFT_PAGE_URL)
 
         df = html_tabloyu_parse_et(mgr, main_res.text)
-        target_row = df[df["Created"] == target_date]
+        target_row = df[df["Draft Id"] == target_id]
 
         if target_row.empty:
             mgr.add_log(f"⚠️ {draft_name} listede bulunamadı! (Tarih eşleşmedi)", "warning")
@@ -325,7 +391,7 @@ def drafti_planla_backend(mgr, draft_item):
             mgr.add_log(f"{draft_name} açılamadı.", "error")
             return None # Return None = Kopyalama olmadı
         '''
-        
+
         redirect_url = urllib.parse.urljoin(BASE_URL, target_row.iloc[0]["Link"])
         if redirect_url == None:
             mgr.add_log(f"{draft_name} açılamadı", "error")
@@ -354,52 +420,68 @@ def drafti_planla_backend(mgr, draft_item):
         if vs_match: 
             detay_form_data["javax.faces.ViewState"] = vs_match.group(1)
         # 3. Polling
-        if "javax.faces.ViewState" in res_plan.text:
-            try:
-                 match = re.search(r'id=".*?javax\.faces\.ViewState.*?"><!\[CDATA\[(.*?)]]>', res_plan.text)
-                 if match: detay_form_data["javax.faces.ViewState"] = match.group(1)
-            except: pass
-        final_xml = poll_results_until_complete(
-            mgr.session, 
-            detay_form_data, 
-            redirect_url, 
-        )
-        
-        if final_xml:
-            sonuc = analizi_yap(mgr, final_xml, draft_item)
-            if isinstance(sonuc, dict) and "found_target" in sonuc:
-                mgr.add_log(f"🏁 {draft_name}: Hedef depo bulunduğu için işlem sonlandırıldı.", "success")
-                return {"STOP": sonuc["found_target"]}
-            
-            elif isinstance(sonuc, dict) and 'found_new' in sonuc:
-                found_wh = sonuc['found_new']
-                
-                # Copy using date
-                yeni_draft_verisi = drafti_kopyala(mgr, target_date)
-                
-                if yeni_draft_verisi:
-                    # Return the new warehouse so it can be saved to the new item
-                    yeni_draft_verisi['newly_found_warehouse'] = found_wh
-                    
-                    mgr.add_log(f"🔄 {draft_name} kopyalandı ({found_wh}).", "success")
-                    return yeni_draft_verisi
-            
-            mgr.add_log(f"{draft_name} tamamlandı, fırsat yok.", "warning")
+        try:
+            # 1. Adım: Planlamanın bitmesini senkron olarak bekle
+            sse_sonuc = listen_for_shipment_completion(mgr, mgr.session, BASE_URL)
+
+            # 2. Adım: Tarayıcının yaptığı JSF AJAX (onPlanShippingJobComplete) çağrısını taklit et
+            complete_payload = {
+                "javax.faces.partial.ajax": "true",
+                "javax.faces.source": "mainForm:onPlanShippingJobComplete",
+                "javax.faces.partial.execute": "mainForm:onPlanShippingJobComplete",
+                "javax.faces.partial.render": "mainForm:shipmentPlansPanel mainForm:a2dw_boxContentPanel messagesPrepDetails",
+                "mainForm:onPlanShippingJobComplete": "mainForm:onPlanShippingJobComplete",
+                "mainForm": "mainForm"
+            }
+
+            # detay_form_data, res_plan adımında zaten en güncel ViewState ile güncellenmişti.
+            # Taslak ürünlerini (draft items) ve yeni payload'u birleştiriyoruz.
+            final_payload = {**detay_form_data, **complete_payload}
+
+            # Sayfayı GET ile indirmek yerine, sadece tabloyu getiren POST isteğini atıyoruz.
+            res_results = mgr.session.post(redirect_url, data=final_payload, headers={"Referer": redirect_url},
+                                           timeout=45)
+            final_xml = res_results.text
+
+            if final_xml and "shipmentPlansPanel" in final_xml:
+                sonuc = analizi_yap(mgr, final_xml, draft_item)
+
+                if isinstance(sonuc, dict) and "found_target" in sonuc:
+                    mgr.add_log(f"🏁 {draft_name}: Hedef depo bulunduğu için işlem sonlandırıldı.", "success")
+                    return {"STOP": sonuc["found_target"]}
+
+                elif isinstance(sonuc, dict) and 'found_new' in sonuc:
+                    found_wh = sonuc['found_new']
+
+                    yeni_draft_verisi = drafti_kopyala(mgr, target_id)
+
+                    if yeni_draft_verisi:
+                        yeni_draft_verisi['newly_found_warehouse'] = found_wh
+                        mgr.add_log(f"🔄 {draft_name} kopyalandı ({found_wh}).", "success")
+                        return yeni_draft_verisi
+
+                mgr.add_log(f"{draft_name} tamamlandı, fırsat yok.", "warning")
+                return None
+            else:
+                mgr.add_log(f"❌ Sonuç XML'i alınamadı veya hatalı. Sunucu yanıtı reddetti.", "error")
+                return None
+
+        except Exception as e:
+            mgr.add_log(f"İşlem beklenirken hata oluştu: {str(e)}", "error")
             return None
-            
-        return None
 
     except Exception as e:
-        mgr.add_log(f"Hata ({draft_name}): {str(e)}", "error")
+        error_string = traceback.format_exc()
+        mgr.add_log(f"Hata ({draft_name}): {error_string}", "error")
         return None
 
-def address_request_handler(mgr, draft_url, target_date, res_draft):
+def address_request_handler(mgr, draft_url, target_id, res_draft):
 
     # Get location:
-    draft_data = mgr.watch_list.get(target_date)
+    draft_data = mgr.watch_list.get(target_id)
     
     if not draft_data:
-        print(f"❌ Error: {target_date} not found in watchlist.")
+        print(f"❌ Error: {target_id} not found in watchlist.")
         return None
         
     location_value = draft_data["loc"]
@@ -623,4 +705,3 @@ def rename_draft_sequence(mgr, target_input_id, target_editor_id, new_name, soup
     except Exception as e:
         print(f"❌ Rename Sequence Error: {e}")
         return False
-

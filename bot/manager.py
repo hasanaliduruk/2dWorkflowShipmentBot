@@ -86,7 +86,7 @@ class GlobalManager:
     def update_watch_list_from_df(self, df_records):
         new_watch_list = {}
         for item in df_records:
-            key = item['date']
+            key = item['draft_id']
             final_item = item.copy()
             
             if key in self.watch_list:
@@ -94,6 +94,7 @@ class GlobalManager:
                 final_item['found_warehouses'] = existing.get('found_warehouses', [])
                 final_item['account_id'] = existing.get('account_id')
                 final_item['account_name'] = existing.get('account_name')
+                final_item['date'] = existing.get('date')
             else:
                 if 'found_warehouses' not in final_item:
                     final_item['found_warehouses'] = []

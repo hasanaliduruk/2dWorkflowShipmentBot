@@ -405,7 +405,8 @@ def main():
                 "Seç", 
                 "Max Mil",
                 "Hedef Depolar",
-                "Draft Name", 
+                "Draft Name",
+                "Draft Id",
                 "From", 
                 "Created", 
                 "SKUs", 
@@ -419,6 +420,7 @@ def main():
                     "Max Mil": st.column_config.NumberColumn("Max Mil", step=50, help="Bu taslak için özel mil sınırı"),
                     "Hedef Depolar": st.column_config.TextColumn("Hedef Depolar", help="Örn: AVP1, TEB3 (Virgülle ayırın)"),
                     "Draft Name": st.column_config.TextColumn("Taslak Adı", width="large"),
+                    "Draft Id": st.column_config.TextColumn("Taslak Id", width="large"),
                     "From": st.column_config.TextColumn("From", width="medium"),
                     "Created": st.column_config.TextColumn("Oluşturulma Tarihi", width="medium"),
                     "SKUs": st.column_config.TextColumn("SKUs", width="small"),
@@ -427,7 +429,7 @@ def main():
                     "Copy ID": None,
                     "Name Input ID": None
                 },
-                disabled=["Draft Name", "From", "Created", "SKUs", "Units"],
+                disabled=["Draft Id", "Draft Name", "From", "Created", "SKUs", "Units"],
                 hide_index=True,
                 width='stretch',
                 key="draft_selector"
@@ -449,7 +451,8 @@ def main():
                             manager.watch_list[key_date] = {
                                 'account_id': manager.current_account_id,
                                 'account_name': manager.current_account_name,
-                                'name': row['Draft Name'], 
+                                'name': row['Draft Name'],
+                                'draft_id': row["Draft Id"],
                                 'date': key_date, 
                                 'loc': row["From"],
                                 'max_mile': int(row["Max Mil"]),
@@ -514,9 +517,10 @@ def main():
 
     # --- DATAFRAME EDITOR ---2026-04-22 18:06:30.122 The fragment with id 1d46e8af4b3881e69a8b99ad1593351b does not exist anymore - it might have been removed during a preceding full-app rerun.
     watch_df = manager.get_watch_list_df()
+    print(watch_df)
 
     if not watch_df.empty:
-        visible_cols = ["account_name", "name", "max_mile", "targets", "loc", "date", "found_warehouses"]
+        visible_cols = ["account_name", "name", "draft_id", "max_mile", "targets", "loc", "date", "found_warehouses"]
         display_df = watch_df[[c for c in visible_cols if c in watch_df.columns]]
         edited_watch_df = st.data_editor(
             display_df,
@@ -524,11 +528,12 @@ def main():
                 "account_name": "Hesap",
                 "name": "Taslak Adı",
                 "date": "Created",
+                "draft_id": "Taslak Id",
                 "loc": "From",
                 "max_mile": st.column_config.NumberColumn("Limit", step=50, help="Bu taslak için özel mil sınırı"),
                 "targets": st.column_config.TextColumn("Hedefler", help="Örn: AVP1, TEB3")
             },
-            disabled=["account_name", "name", "date", "loc"],
+            disabled=["account_name", "name", "date", "loc", "draft_id"],
             num_rows="dynamic",
             key="watch_list_editor",
             width='stretch'
