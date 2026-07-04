@@ -2,12 +2,14 @@ import time
 
 from bot.auth import switch_account_backend
 from bot.drafts import drafti_planla_backend
+import traceback
 
 def safe_run(manager):
     try:
         gorev(manager)
     except Exception as e:
         manager.add_log(f"🔥 Scheduler crash: {e}", "error")
+        traceback.print_exc()
 
 def gorev(mgr):
     if not mgr.is_running: return
@@ -16,7 +18,7 @@ def gorev(mgr):
     mgr.add_log(f"⏰ Periyodik kontrol başladı. ({len(mgr.watch_list)} adet)", "info")
     
     tasks = list(mgr.watch_list.values())
-    sorted_tasks = sorted(tasks, key=lambda x: x.get('account_id', ''))
+    sorted_tasks = sorted(tasks, key=lambda x: str(x.get('account_id') or ''))
     
     #keys_to_remove = []
 
