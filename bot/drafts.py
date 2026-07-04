@@ -292,6 +292,7 @@ def drafti_kopyala(mgr, target_id):
             if not yeni_satir.empty:
                 yeni_tarih = yeni_satir.iloc[0]["Created"]
                 loc = yeni_satir.iloc[0]["From"]
+                new_id = yeni_satir.iloc[0]["Draft Id"]
                 new_input_id = yeni_satir.iloc[0]["Name Input ID"]
                 new_target_editor_id = yeni_satir.iloc[0]["UI Cell Editor"]
                 clean_base = re.sub(r'(\s*-\s*copy|\s*copy|\s*-\s*clone)+', '', new_draft_name, flags=re.IGNORECASE).strip()
@@ -335,7 +336,7 @@ def drafti_kopyala(mgr, target_id):
                 if not yeni_satir.empty:
                     yeni_tarih = yeni_satir.iloc[0]["Created"]
                     loc = yeni_satir.iloc[0]["From"]
-                return {"name": final_draft_name, "date": yeni_tarih, "loc": loc}
+                return {"name": final_draft_name, "date": yeni_tarih, "loc": loc, "draft_id": new_id}
             else:
                 mgr.add_log("⚠️ Kopyalanan satır listede bulunamadı (Rename atlandı).", "warning")
             return None
